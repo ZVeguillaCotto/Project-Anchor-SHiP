@@ -1,0 +1,226 @@
+# ============================================================================
+# SHiP v0.1 — esphome/components/ship_fastpath/example_esp32c6_switch.yaml
+# ============================================================================
+#
+# LAYER 1 — THE KITCHEN-TABLE EXPLANATION (ELI5)
+# -----------------------------------------------
+# This is a copy-paste recipe for adding SHiP Fast-Path to your ESP32-C6
+# smart switch. Just like a cooking recipe, you fill in the blanks
+# (your network details, your button, your relay) and ESPHome bakes the
+# firmware automatically.
+#
+# WHAT THIS DOES:
+#   - Your ESP32-C6 joins the 802.15.4 radio channel your other SHiP devices
+#     are on (channel 15 in this example).
+#   - When you press the physical button connected to GPIO9, the switch
+#     immediately broadcasts a 19-byte SHiP radio whisper saying "toggle
+#     all lights in group 1" — WITHOUT going through your hub or Wi-Fi router.
+#   - Any SHiP device in group 1 that hears the whisper acts on it instantly
+#     (typically < 3 milliseconds, even if your router is unplugged).
+#   - The switch also has a LOCAL rule (LEAT): if it receives a "5× click"
+#     whisper from another group-1 device, it dims its own relay to 50% and
+#     closes the motorised shade.
+#
+# LAYER 2 — THE UNDER-THE-HOOD IMPLEMENTATION
+# --------------------------------------------
+# Tested with ESPHome 2026.9+. Requires ESP32-C6 with CONFIG_IEEE802154_ENABLED.
+# The ship_fastpath component source must be in the esphome/components directory.
+# ============================================================================
+
+esphome:
+  name: ship-switch-kitchen
+  friendly_name: "Kitchen SHiP Switch"
+  comment: "SHiP v0.1 Fast-Path enabled smart switch (ESP32-C6)"
+  project:
+    name: "project-anchor.ship-fastpath"
+    version: "0.1.0"
+
+esp32:
+  board: esp32-c6-devkitc-1
+  framework:
+    type: esp-idf
+    version: recommended
+    sdkconfig_options:
+      # ELI5: Enable the 802.15.4 radio hardware on ESP32-C6
+      CONFIG_IEEE802154_ENABLED: "y"
+      CONFIG_IEEE802154_FRAME_PENDING_TABLE_SIZE: "20"
+      # ELI5: Disable ESP32-C6 Wi-Fi to avoid shared-radio collisions
+      # (Remove this line if you need Wi-Fi for OTA; see Guard #2 in __init__.py)
+      CONFIG_ESP_WIFI_ENABLED: "n"
+
+logger:
+  level: DEBUG
+  logs:
+    ship_fastpath: DEBUG
+
+# ============================================================================
+# SHIP FAST-PATH COMPONENT CONFIGURATION
+# ELI5: Fill in YOUR network details here.
+# ============================================================================
+external_components:
+  - source:
+      type: local
+      path: ./esphome/components
+    components: [ship_fastpath]
+
+ship_fastpath:
+  id: ship_fp
+  # ELI5: Which radio channel to use (must match ALL other SHiP devices).
+  #       Zigbee channels 11–26. Channel 15 avoids most Wi-Fi overlap.
+  channel: 15
+
+  # ELI5: Your network's PAN ID (like a Wi-Fi SSID, but a number).
+  #       Must match on ALL SHiP devices in your home.
+  pan_id: 0x1234
+
+  # ELI5: The SHiP Device Group this switch belongs to (0–255).
+  #       Devices in the same group hear each other's commands.
+  group_id: 1
+
+  # ELI5: Your 16-byte secret key — 32 hex characters.
+  #       CHANGE THIS to a random value. Keep it secret!
+  #       All devices in the same group MUST use the same key.
+  group_key: "deadbeefcafebabe0102030405060708"
+
+  # ELI5: How often battery-powered sensors wake up to check for messages.
+  #       Set to 0s for always-on devices. Set to 5s for battery devices.
+  poll_period: 5s
+
+  # ELI5: Maximum number of "connection points" on this device.
+  #       nRF52840 supports max 8. ESP32-C6/H2 support up to 239.
+  max_endpoints: 8
+
+# ============================================================================
+# PHYSICAL BUTTON — GPIO9
+# ELI5: Wire your physical push button here. Single press = turn lights on/off.
+#       Double-tap = recall "Movie Night" scene.
+#       5× tap = goodnight scene (5% warm light everywhere).
+# ============================================================================
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO9
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Kitchen Switch Button"
+    id: kitchen_button
+    on_click:
+      # --- Single press: Toggle all lights in group 1 ---
+      - min_length: 50ms
+        max_length: 350ms
+        then:
+          - lambda: |-
+              // ELI5: Broadcast "domain=OnOff, gesture=1×click, relay_mask=all"
+              id(ship_fp).send_ship_frame(
+                0x1,   // domain: SHIP_DOMAIN_ONOFF
+                0x1,   // gesture: 1× click
+                0xFF,  // param_1: relay mask 0xFF = toggle all
+                0x00,  // param_2: unused
+                0x00   // param_3: unused
+              );
+      # --- Double tap: Recall "Movie Night" scene (group 1, scene 2) ---
+      - min_length: 50ms
+        max_length: 350ms
+        times: 2
+        then:
+          - lambda: |-
+              // ELI5: Broadcast "domain=SceneRecall, gesture=2×click, scene_id=2"
+              id(ship_fp).send_ship_frame(
+                0x3,   // domain: SHIP_DOMAIN_SCENE_RECALL
+                0x2,   // gesture: 2× click
+                0x02,  // param_1: scene ID 2 = Movie Night
+                0x01,  // param_2: group_id for scene lookup
+                0x00   // param_3: transition fade = 0 (immediate)
+              );
+      # --- 5× click: Goodnight scene (5% warm white, close shades) ---
+      - min_length: 50ms
+        max_length: 350ms
+        times: 5
+        then:
+          - lambda: |-
+              // ELI5: Broadcast "domain=LightingCombo, gesture=5×click,
+              //        brightness=13 (~5%), color_temp=370 Mireds (warm white)"
+              id(ship_fp).send_ship_frame(
+                0x2,   // domain: SHIP_DOMAIN_LIGHTING_COMBO
+                0x5,   // gesture: 5× click
+                13,    // param_1: brightness = 13/255 ≈ 5%
+                0xB2,  // param_2: 370 Mireds colour temperature (0xB2 = 178... use 2-byte via p2+p3)
+                0x01   // param_3: transition fade = 100ms
+              );
+              // Also broadcast window shade close
+              id(ship_fp).send_ship_frame(
+                0x7,   // domain: SHIP_DOMAIN_WINDOW_SHADE
+                0x5,   // gesture: 5× click
+                100,   // param_1: shade position = 100% closed
+                0x00,  // param_2: tilt = 0
+                0x00   // param_3: unused
+              );
+
+# ============================================================================
+# LOCAL RELAY — GPIO5
+# ELI5: Controls a physical relay (or connected load) on GPIO5.
+# ============================================================================
+switch:
+  - platform: gpio
+    pin: GPIO5
+    name: "Kitchen Relay"
+    id: kitchen_relay
+    restore_mode: RESTORE_DEFAULT_OFF
+
+# ============================================================================
+# LEAT — LOCAL EVENT-ACTION TABLE
+# ELI5: These are the rules burned into THIS device's memory. When this switch
+# HEARS a SHiP frame matching a rule, it immediately acts — no hub needed.
+# ============================================================================
+# LEAT entries are added programmatically from ESPHome's on_boot hook:
+on_boot:
+  priority: 200
+  then:
+    - lambda: |-
+        // LEAT Rule 0: When group 1 sends "1× click" OnOff command,
+        //              toggle our local relay immediately.
+        ship_leat_entry_t r0;
+        r0.group_id    = 1;
+        r0.domain      = 0x1;   // SHIP_DOMAIN_ONOFF
+        r0.gesture     = 0x1;   // 1× click
+        r0.action_type = 0;     // relay toggle
+        r0.action_param= 0;     // 0 = toggle
+        r0.hour_start  = 0;     // any time of day
+        r0.hour_end    = 23;
+        r0.enabled     = true;
+        id(ship_fp).add_leat_entry(r0);
+
+        // LEAT Rule 1: 2:00 AM warm nightlight (Mesh-RTC time-of-day window)
+        //              When group 1 sends "1× click" at 02:00–02:59 UTC,
+        //              set brightness to 5% instead of toggling.
+        ship_leat_entry_t r1;
+        r1.group_id    = 1;
+        r1.domain      = 0x2;   // SHIP_DOMAIN_LIGHTING_COMBO
+        r1.gesture     = 0x1;   // 1× click
+        r1.action_type = 1;     // brightness
+        r1.action_param= 13;    // 5% brightness
+        r1.hour_start  = 2;     // 02:00 UTC
+        r1.hour_end    = 2;     // 02:59 UTC
+        r1.enabled     = true;
+        id(ship_fp).add_leat_entry(r1);
+
+# ============================================================================
+# OTA (Over-the-Air Firmware Updates)
+# ELI5: Lets you update the firmware without plugging in a USB cable.
+# ============================================================================
+ota:
+  - platform: esphome
+    password: "your-ota-password-here"
+
+# ============================================================================
+# WIFI (Optional — for OTA and ESPHome dashboard only)
+# ELI5: If you kept Wi-Fi enabled above (removed CONFIG_ESP_WIFI_ENABLED: "n"),
+# fill in your home Wi-Fi credentials here. Otherwise delete this section.
+# Note: See Guard #2 in __init__.py — Wi-Fi + Zigbee shares one radio path.
+# ============================================================================
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "ship-switch-kitchen-ap"
+    password: "shipanchor"
