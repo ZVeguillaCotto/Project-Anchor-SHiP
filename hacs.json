@@ -1,0 +1,8 @@
+{
+  "name": "SHiP Anchor — Smart Home Independent Protocol",
+  "category": "integration",
+  "render_readme": true,
+  "hacs": ">=2.0.0",
+  "homeassistant": ">=2025.1.0",
+  "filename": "ship_anchor.zip"
+}
