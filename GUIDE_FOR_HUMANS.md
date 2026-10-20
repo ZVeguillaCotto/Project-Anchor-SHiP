@@ -220,7 +220,9 @@ Rule 1 only fires between 2:00 AM and 2:59 AM (the "goodnight nightlight" rule).
 
 ## Part 8: Running the Verification Suite
 
-The entire protocol has been verified with automated tests. Run them yourself:
+The protocol code and host-side simulations have automated checks. These do
+not verify Home Assistant installation, real device operations, or radio
+performance. Run the checks yourself:
 
 ### C Core Tests (10 tests, all pass)
 ```bash
@@ -248,10 +250,10 @@ RESULTS: 10/10 tests passed  — ALL PASS ✓
 python3 sim/run_anchor_benchmarks.py
 ```
 
-**Expected output:**
+**Expected output from the simulator (not a hardware or Home Assistant test):**
 ```
 ALL 6/6 DRILLS PASSED ✓
-SHiP v0.1 (Project Anchor) — PoC verified and ready.
+Simulation checks passed — real Home Assistant and hardware validation remain.
 ```
 
 ### 30-Light “Goodnight” Scene Benchmark

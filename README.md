@@ -6,11 +6,16 @@
 [![C Tests](https://img.shields.io/badge/C%20Core%20Tests-10%2F10%20PASS-brightgreen)](#)
 [![Python Drills](https://img.shields.io/badge/Disaster%20Drills-6%2F6%20PASS-brightgreen)](#)
 [![Frame Size](https://img.shields.io/badge/Frame%20Size-19%20bytes-blue)](#)
-[![Airtime](https://img.shields.io/badge/Airtime-0.864%20ms-blue)](#)
-[![E2E Latency](https://img.shields.io/badge/End--to--End-<3%20ms-blue)](#)
-[![HACS](https://img.shields.io/badge/HACS-3--click%20install-orange)](#)
+[![Airtime](https://img.shields.io/badge/Airtime-calculated%200.864%20ms-blue)](#)
+[![Latency](https://img.shields.io/badge/Latency-simulated%20estimate-blue)](#)
 
 ---
+
+> **Testing status:** The passing checks below are host-side simulations and
+> native compile checks. They do not verify installation in Home Assistant,
+> communication with real devices, radio timing, or hardware behavior. Treat
+> this project as an experimental PoC; do not use it for safety-critical
+> controls.
 
 ## LAYER 1 — The Kitchen-Table Explanation (ELI5)
 
@@ -141,14 +146,14 @@ DRILL 5 — 30-Light Goodnight Scene
 FINAL REPORT:
   ✓  Drill 1: C Core + Radio HAL (10/10 C unit tests)
   ✓  Drill 2: Tier 1 Compiler (ZHA membership, Matter 2-step, ZWLR block)
-  ✓  Drill 3: Water Leak Reflex (0.878 ms end-to-end)
+  ✓  Drill 3: Water Leak Reflex (~0.88 ms modeled estimate)
   ✓  Drill 4: 5×-Click Scene + 2:00 AM Mesh-RTC Nightlight
   ✓  Drill 5: 30-Device Storm & 50-Node Recovery
   ✓  Drill 6: Five MCP tools and <1,000 lexical schema tokens
 
   ALL 6/6 DRILLS PASSED ✓
-  SHiP v0.1 (Project Anchor) — PoC verified and ready.
-  Total benchmark runtime: 1.09 seconds
+  Simulation checks passed — real Home Assistant and hardware validation remain.
+  Total benchmark runtime: varies by machine
 ```
 
 ---
@@ -192,18 +197,29 @@ project-anchor-ship/
 
 ## Quick Start
 
-### Tier 1: Install the Home Assistant Integration (3 clicks)
+### Tier 1: Install the Home Assistant Integration
 
-1. Open HACS → Custom Repositories → Add `https://github.com/project-anchor/ship`
-2. Search "SHiP Anchor" → Install
-3. Restart Home Assistant → go to **Settings → Integrations → Add → SHiP Anchor**
+1. For a local/private checkout, copy `custom_components/ship_anchor` into
+   `<HA config>/custom_components/ship_anchor`. Alternatively, if the
+   repository is public and available to your HACS account, add
+   `https://github.com/ZVeguillaCotto/Project-Anchor-SHiP` to HACS as an
+   **Integration** and install **SHiP Anchor**.
+   This repository is private; testers need access to obtain its files.
+2. Restart Home Assistant.
+3. Open **Settings → Devices & services → Add integration → SHiP Anchor**.
 
-Then call the service:
+The first service call is preview-only by default:
 ```yaml
 service: ship_anchor.compile
 data:
-  dry_run: false   # Set to true first to preview all payloads without applying
+  dry_run: true
 ```
+Review the generated payloads in the Home Assistant logs and check device
+compatibility before deliberately setting `dry_run: false`. A live compile
+writes to devices and may not be reversible for every supported protocol;
+`ship_anchor.erase` only works for protocols with an implemented erase
+operation. The compiler currently reads automations from `automations.yaml`;
+automations stored only in Home Assistant's UI storage are not included.
 
 ### Tier 2: Flash SHiP Fast-Path to an ESP32-C6
 
@@ -225,7 +241,7 @@ gcc -Wall -Wextra -Werror -std=c11 -DSHIP_PLATFORM_NATIVE \
 # Run all six Python disaster and MCP drills
 python3 sim/run_anchor_benchmarks.py
 
-# Compile/link the ESPHome C++ component against the included protocol and HAL
+# Native compile/link smoke check with stand-in ESPHome headers; not a target build
 python3 sim/check_ship_fastpath_compile.py
 ```
 
@@ -258,11 +274,11 @@ definition; actual model tokenizer counts can vary by client.
 
 | Platform | TX Method | RX Method | Coexistence |
 |---|---|---|---|
-| ESP32-C6 (ESP-IDF v5.1+) | `esp_ieee802154_transmit()` | `esp_ieee802154_receive_done` callback | ⚠️ Shares 2.4 GHz with Wi-Fi |
-| ESP32-H2 (ESP-IDF v5.1+) | `esp_ieee802154_transmit()` | `esp_ieee802154_receive_done` callback | ✅ Zigbee-only (no Wi-Fi) |
-| nRF52840 (NCS v3.2+) | `nrf_802154_transmit_raw()` | `nrf_802154_received_raw()` callback | ✅ MPSL managed |
-| nRF5340 (NCS v3.2+) | `nrf_802154_transmit_raw()` | `nrf_802154_received_raw()` callback | ✅ MPSL managed |
-| OpenThread with ESP-IDF/Nordic SoC driver | `esp_ieee802154_transmit()` / `nrf_802154_transmit_raw()` | `otLinkSetPcapCallback()` pcap hook | ✅ Non-intrusive wiretap |
+| ESP32-C6 (ESP-IDF v5.1+) | `esp_ieee802154_transmit()` (implementation present; hardware unverified) | Receive registration is not implemented | Not hardware-verified |
+| ESP32-H2 (ESP-IDF v5.1+) | `esp_ieee802154_transmit()` (implementation present; hardware unverified) | Receive registration is not implemented | Not hardware-verified |
+| nRF52840 (NCS v3.2+) | `nrf_802154_transmit_raw()` (implementation present; hardware unverified) | Driver callback path; hardware unverified | Not hardware-verified |
+| nRF5340 (NCS v3.2+) | `nrf_802154_transmit_raw()` (implementation present; hardware unverified) | Driver callback path; hardware unverified | Not hardware-verified |
+| OpenThread with ESP-IDF/Nordic SoC driver | Platform-dependent; hardware unverified | `otLinkSetPcapCallback()` path; hardware unverified | Not hardware-verified |
 | OpenThread without direct SoC driver | Unsupported for Tier 2 TX | `otLinkSetPcapCallback()` pcap hook | RX inspection only |
 
 ---

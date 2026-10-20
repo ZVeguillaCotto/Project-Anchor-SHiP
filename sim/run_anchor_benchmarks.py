@@ -6,8 +6,8 @@ SHiP v0.1 — sim/run_anchor_benchmarks.py
 
 LAYER 1 — THE KITCHEN-TABLE EXPLANATION (ELI5)
 -----------------------------------------------
-This is the "full home disaster simulator" — it exercises six different test
-situations and checks that SHiP handles each one.
+This host-side simulator exercises six modeled test situations. It checks
+protocol code and generated plans, not Home Assistant or real-device behavior.
 
 Think of it like a fire drill. You don't wait for a real fire to discover if
 the sprinklers work. You run drills on a fake fire and confirm everything
@@ -28,8 +28,8 @@ THE SIX DRILLS:
 
   DRILL 3 — EMERGENCY WATER LEAK REFLEX (hub & Wi-Fi dead):
     Simulate a burst pipe while Home Assistant is offline.
-    Verify the SHiP frame with domain=0x4 (Water Valve) is produced in
-    <3 ms (0.864 ms measured airtime @ 250 kbps).
+    Verify the SHiP frame with domain=0x4 (Water Valve) is produced and
+    calculate theoretical airtime at 250 kbps.
 
   DRILL 4 — 5× CLICK MULTI-DOMAIN SCENE + 2:00 AM NIGHTLIGHT:
     a) 5× click sends ONE 19-byte broadcast covering Lights + Shades + HVAC.
@@ -65,6 +65,7 @@ import random
 import math
 import tempfile
 import json
+import inspect
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -192,10 +193,52 @@ async def drill_2_compiler() -> TestResult:
 
     # Mock minimal hass / store for unit-test environment (no real HA)
     class MockStore:
-        async def async_load(self): return {}
-        async def async_save(self, data): pass
+        def __init__(self):
+            self.saved = None
 
-    compiler = AnchorCompiler(hass=None, store=MockStore(), stored_data={})
+        async def async_load(self): return {}
+        async def async_save(self, data): self.saved = dict(data)
+
+    store = MockStore()
+    compiler = AnchorCompiler(hass=None, store=store, stored_data={})
+    safe_defaults = (
+        inspect.signature(AnchorCompiler.async_compile).parameters["dry_run"].default
+        is True
+        and inspect.signature(
+            AnchorCompiler.async_compile_config
+        ).parameters["dry_run"].default is True
+    )
+    if safe_defaults:
+        details.append(ok("Compiler entry points default to preview-only ✓"))
+    else:
+        details.append(fail("Compiler must default to preview-only"))
+        all_pass = False
+
+    previous_bindings = {
+        "bindings": [{
+            "protocol": "zigbee_zha",
+            "source_ieee": "source",
+            "target_ieee": "target",
+            "clusters": [6],
+            "group_id": None,
+            "preflight_done": True,
+            "timestamp": "",
+        }]
+    }
+    erase_compiler = AnchorCompiler(
+        hass=None, store=MockStore(), stored_data=previous_bindings
+    )
+    try:
+        await erase_compiler.async_erase_all()
+    except RuntimeError:
+        erase_preserves_unsupported = previous_bindings["bindings"] != []
+    else:
+        erase_preserves_unsupported = False
+    if erase_preserves_unsupported:
+        details.append(ok("Unsupported ZHA erase retains its recovery record ✓"))
+    else:
+        details.append(fail("Unsupported erase must preserve its recovery record"))
+        all_pass = False
 
     normalized_ha = parse_ha_automation_dict(
         {
@@ -482,7 +525,7 @@ def drill_3_leak_reflex() -> TestResult:
     goes nowhere. With SHiP, the sensor broadcasts a 19-byte water-valve-close
     command directly to the shutoff valve — under 3 milliseconds.
 
-    Measured: 0.864 ms airtime @ 250 kbps (IEEE 802.15.4 O-QPSK).
+    Modeled: 0.864 ms airtime @ 250 kbps (IEEE 802.15.4 O-QPSK).
     """
     print_header("DRILL 3 — Emergency Water Leak Reflex (Hub & Wi-Fi Dead)")
 
@@ -958,7 +1001,7 @@ def drill_6_mcp_server() -> TestResult:
 async def main() -> None:
     print(f"\n{BOLD}{CYAN}")
     print("╔══════════════════════════════════════════════════════════════════════╗")
-    print("║     SHiP v0.1 (Project Anchor) — Full-Home Disaster Simulator       ║")
+    print("║     SHiP v0.1 (Project Anchor) — Host-Side Simulator               ║")
     print("║     & Tier 1 Offline Compiler Verification Suite                    ║")
     print("╚══════════════════════════════════════════════════════════════════════╝")
     print(f"{RESET}")
@@ -1005,7 +1048,10 @@ async def main() -> None:
 
     if all_passed:
         print(f"  {BOLD}{GREEN}ALL {total_count}/{total_count} DRILLS PASSED ✓{RESET}")
-        print(f"  {GREEN}SHiP v0.1 (Project Anchor) — PoC verified and ready.{RESET}")
+        print(
+            f"  {GREEN}Simulation checks passed; real Home Assistant and "
+            f"hardware validation remain.{RESET}"
+        )
     else:
         failed = [r.name for r in results if not r.passed]
         print(f"  {RED}{BOLD}{passed_count}/{total_count} DRILLS PASSED — FAILURES: {', '.join(failed)}{RESET}")
