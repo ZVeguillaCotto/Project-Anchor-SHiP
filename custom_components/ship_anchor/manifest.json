@@ -2,9 +2,9 @@
   "domain": "ship_anchor",
   "name": "SHiP Anchor (Smart Home Independent Protocol)",
   "version": "0.1.0",
-  "documentation": "https://github.com/project-anchor/ship",
-  "issue_tracker": "https://github.com/project-anchor/ship/issues",
-  "codeowners": ["@project-anchor"],
+  "documentation": "https://github.com/ZVeguillaCotto/Project-Anchor-SHiP",
+  "issue_tracker": "https://github.com/ZVeguillaCotto/Project-Anchor-SHiP/issues",
+  "codeowners": ["@ZVeguillaCotto"],
   "requirements": [
     "zigpy>=0.60.0",
     "websockets>=12.0",

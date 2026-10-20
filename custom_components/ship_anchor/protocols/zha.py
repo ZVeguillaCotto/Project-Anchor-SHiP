@@ -12,7 +12,6 @@ binding for more than two targets, and records the resulting binding.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from . import BindingRecord, CompileResult, ProtocolHandler
@@ -21,9 +20,6 @@ from ..quirks_inspector import (
     CLUSTER_ONOFF,
     CLUSTER_SCENES,
 )
-
-_LOGGER = logging.getLogger(__name__)
-
 
 class ZhaHandler(ProtocolHandler):
     async def compile(
@@ -154,8 +150,4 @@ class ZhaHandler(ProtocolHandler):
         result.warnings.extend(preflight.warnings)
 
     async def erase(self, compiler: Any, binding: BindingRecord) -> bool:
-        _LOGGER.info(
-            "SHiP Anchor: ZHA unbind %s → %s (clusters=%s)",
-            binding.source_ieee, binding.target_ieee, binding.clusters,
-        )
-        return True
+        return False

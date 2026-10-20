@@ -1,0 +1,10 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "SHiP Anchor",
+        "description": "Add SHiP Anchor to Home Assistant. No settings are required."
+      }
+    }
+  }
+}

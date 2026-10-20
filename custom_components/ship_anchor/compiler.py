@@ -62,7 +62,7 @@ class AnchorCompiler:
         self._inspector = QuirksInspector()
 
     async def async_compile(
-        self, automation_ids: list[str], dry_run: bool = False
+        self, automation_ids: list[str], dry_run: bool = True
     ) -> CompileResult:
         result = CompileResult()
         automations = await self._fetch_automations(automation_ids)
@@ -77,9 +77,9 @@ class AnchorCompiler:
         for auto_config in automations:
             await self._compile_automation(auto_config, result, dry_run)
         if not dry_run:
-            self._stored_data["bindings"] = [
+            self._stored_data.setdefault("bindings", []).extend(
                 asdict(binding) for binding in result.bindings_added
-            ]
+            )
             await self._store.async_save(self._stored_data)
         return result
 
@@ -106,15 +106,22 @@ class AnchorCompiler:
     async def async_erase_all(self) -> None:
         """Remove all offline bindings previously programmed."""
         bindings_raw = self._stored_data.get("bindings", [])
+        unsupported = []
         for raw in bindings_raw:
-            try:
-                binding = BindingRecord(**{
-                    key: value for key, value in raw.items()
-                    if key in BindingRecord.__dataclass_fields__
-                })
-                await self._erase_binding(binding)
-            except Exception as exc:  # pylint: disable=broad-except
-                _LOGGER.warning("SHiP Anchor erase failed for %s: %s", raw, exc)
+            binding = BindingRecord(**{
+                key: value for key, value in raw.items()
+                if key in BindingRecord.__dataclass_fields__
+            })
+            if not await self._erase_binding(binding):
+                unsupported.append(
+                    "{}: {} → {}".format(
+                        binding.protocol, binding.source_ieee, binding.target_ieee
+                    )
+                )
+        if unsupported:
+            raise RuntimeError(
+                "No supported erase operation for: {}".format(", ".join(unsupported))
+            )
         self._stored_data["bindings"] = []
         await self._store.async_save(self._stored_data)
         _LOGGER.info("SHiP Anchor: all offline bindings erased.")
@@ -271,60 +278,47 @@ class AnchorCompiler:
             str(parsed.get("protocol", "")).upper(), Protocol.UNKNOWN
         )
 
-    async def _erase_binding(self, binding: BindingRecord) -> None:
-        await self._dispatcher.erase(self, binding)
+    async def _erase_binding(self, binding: BindingRecord) -> bool:
+        return await self._dispatcher.erase(self, binding)
 
     async def _hass_service_call(self, service: str, data: dict) -> None:
         if not self._hass:
-            return
+            raise RuntimeError("Home Assistant is unavailable for service calls")
         domain, service_name = service.split(".", 1)
-        try:
-            await self._hass.services.async_call(domain, service_name, data)
-        except Exception as exc:  # pylint: disable=broad-except
-            _LOGGER.error("SHiP Anchor service call %s failed: %s", service, exc)
+        await self._hass.services.async_call(domain, service_name, data)
 
     async def _mqtt_publish(self, topic: str, payload: str) -> None:
         if not self._hass:
-            return
-        try:
-            from homeassistant.components import mqtt  # type: ignore[import]
-            await mqtt.async_publish(self._hass, topic, payload, qos=1)
-        except Exception as exc:  # pylint: disable=broad-except
-            _LOGGER.error("SHiP Anchor MQTT publish to %s failed: %s", topic, exc)
+            raise RuntimeError("Home Assistant is unavailable for MQTT publishing")
+        from homeassistant.components import mqtt  # type: ignore[import]
+
+        await mqtt.async_publish(self._hass, topic, payload, qos=1)
 
     async def _matter_ws_send(self, message: dict) -> None:
-        try:
-            import websockets  # type: ignore[import]
-            async with websockets.connect(MATTER_WS_URL, open_timeout=5) as ws:
-                await ws.send(json.dumps(message))
-                response = await asyncio.wait_for(ws.recv(), timeout=10)
-                _LOGGER.debug("Matter WS response: %s", response)
-        except Exception as exc:  # pylint: disable=broad-except
-            _LOGGER.error(
-                "SHiP Anchor Matter WebSocket to %s failed: %s", MATTER_WS_URL, exc
-            )
+        import websockets  # type: ignore[import]
+
+        async with websockets.connect(MATTER_WS_URL, open_timeout=5) as ws:
+            await ws.send(json.dumps(message))
+            response = await asyncio.wait_for(ws.recv(), timeout=10)
+            _LOGGER.debug("Matter WS response: %s", response)
 
     async def _http_post_json(self, url: str, body: dict) -> None:
-        try:
-            import aiohttp  # type: ignore[import]
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    url, json=body, timeout=aiohttp.ClientTimeout(total=5)
-                ):
-                    pass
-        except Exception as exc:  # pylint: disable=broad-except
-            _LOGGER.error("SHiP Anchor HTTP POST to %s failed: %s", url, exc)
+        import aiohttp  # type: ignore[import]
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, json=body, timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
+                response.raise_for_status()
 
     async def _http_get_params(self, url: str, params: dict) -> None:
-        try:
-            import aiohttp  # type: ignore[import]
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url, params=params, timeout=aiohttp.ClientTimeout(total=5)
-                ):
-                    pass
-        except Exception as exc:  # pylint: disable=broad-except
-            _LOGGER.error("SHiP Anchor HTTP GET to %s failed: %s", url, exc)
+        import aiohttp  # type: ignore[import]
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url, params=params, timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
+                response.raise_for_status()
 
 
 __all__ = [

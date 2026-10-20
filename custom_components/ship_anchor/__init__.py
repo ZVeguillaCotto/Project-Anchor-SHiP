@@ -44,10 +44,8 @@ try:
     from homeassistant.core import HomeAssistant, ServiceCall
     from homeassistant.helpers.storage import Store
     from homeassistant.helpers.typing import ConfigType
-    _HA_AVAILABLE = True
 except ImportError:
     # Running outside Home Assistant (unit tests / benchmarks)
-    _HA_AVAILABLE = False
     HomeAssistant = Any   # type: ignore[misc,assignment]
     ServiceCall   = Any   # type: ignore[misc,assignment]
     Store         = Any   # type: ignore[misc,assignment]
@@ -63,13 +61,15 @@ STORAGE_VERSION = 1
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """
-    ELI5: Called once when HA starts. Loads saved bindings from disk and
-    registers the two public services (compile & erase).
+    """Allow Home Assistant to prepare the integration before its config entry."""
+    return True
 
-    Under the hood: initialises the Persistent Store and attaches the
-    AnchorCompiler instance into hass.data[DOMAIN] for service handlers.
-    """
+
+async def _async_setup_runtime(hass: HomeAssistant) -> None:
+    """Load persisted bindings and register the integration's services."""
+    if DOMAIN in hass.data:
+        return
+
     _LOGGER.info(
         "SHiP Anchor v0.1 starting up — Smart Home Independent Protocol"
     )
@@ -94,7 +94,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def handle_compile(call: ServiceCall) -> None:
         """Handle the ship_anchor.compile service call."""
         automation_ids: list[str] = call.data.get("automation_ids", [])
-        dry_run: bool = call.data.get("dry_run", False)
+        dry_run: bool = call.data.get("dry_run", True)
 
         _LOGGER.info(
             "SHiP Anchor: compile service called (automation_ids=%s, dry_run=%s)",
@@ -120,15 +120,18 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.services.async_register(DOMAIN, "erase", handle_erase)
 
     _LOGGER.info("SHiP Anchor: services registered — ready.")
-    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: Any) -> bool:
-    """Support config-flow entry setup (future UI config flow)."""
+    """Set up services and persistent state for the configured integration."""
+    await _async_setup_runtime(hass)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: Any) -> bool:
     """Clean up when the integration is unloaded."""
+    if DOMAIN in hass.data:
+        hass.services.async_remove(DOMAIN, "compile")
+        hass.services.async_remove(DOMAIN, "erase")
     hass.data.pop(DOMAIN, None)
     return True
