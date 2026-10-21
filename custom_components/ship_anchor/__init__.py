@@ -95,24 +95,85 @@ async def _async_setup_runtime(hass: HomeAssistant) -> None:
     # -----------------------------------------------------------------------
     async def handle_compile(call: ServiceCall) -> None:
         """Handle the ship_anchor.compile service call."""
-        automation_ids: list[str] = call.data.get("automation_ids", [])
         dry_run: bool = call.data.get("dry_run", True)
+        # ELI5: there are two ways to ask for a compile.
+        #  (a) "Look through ALL my automations" — pass automation_ids (or
+        #      nothing at all), and SHiP Anchor scans your automations.yaml.
+        #  (b) "Compile THIS exact binding" — pass the fields directly
+        #      (protocol, source_ieee, source_model, targets, ...). In that
+        #      case we skip the automation scan entirely and hand the payload
+        #      straight to the protocol translator. This is how you test a
+        #      single device pair without touching your automations.
+        direct_config_keys = ("protocol", "source_ieee", "source_node_id")
+        has_direct_config = any(call.data.get(key) for key in direct_config_keys)
+        raw_ids = call.data.get("automation_ids", [])
+        # ELI5: the service UI gives us a single string (possibly
+        # comma-separated); a YAML caller may pass a list. Normalise to a list.
+        if isinstance(raw_ids, str):
+            automation_ids: list[str] = [
+                part.strip() for part in raw_ids.split(",") if part.strip()
+            ]
+        elif isinstance(raw_ids, list):
+            automation_ids = [str(item) for item in raw_ids if item]
+        else:
+            automation_ids = []
 
         _LOGGER.warning(
-            "SHiP Anchor: compile service called (automation_ids=%s, dry_run=%s)",
+            "SHiP Anchor: compile service called (mode=%s, automation_ids=%s, dry_run=%s)",
+            "direct-config" if has_direct_config else "automation-scan",
             automation_ids,
             dry_run,
         )
         try:
-            result = await compiler.async_compile(
-                automation_ids=automation_ids, dry_run=dry_run
-            )
+            if has_direct_config:
+                result = await compiler.async_compile_config(
+                    dict(call.data), dry_run=dry_run
+                )
+                # ELI5: a live (non-dry-run) direct compile still has to be
+                # written to the persistent store, otherwise erase_all has
+                # nothing to undo. async_compile_config only builds the result.
+                if not dry_run and result.bindings_added:
+                    from dataclasses import asdict
+
+                    compiler._stored_data.setdefault("bindings", []).extend(
+                        asdict(binding) for binding in result.bindings_added
+                    )
+                    await compiler._store.async_save(compiler._stored_data)
+            else:
+                result = await compiler.async_compile(
+                    automation_ids=automation_ids, dry_run=dry_run
+                )
         except Exception:
             # ELI5: a failed compile should never be silent — the user must
             # be able to see what went wrong in the log.
             _LOGGER.exception("SHiP Anchor: compile service failed")
             raise
-        _LOGGER.warning("SHiP Anchor compile result: %s", result)
+
+        # ELI5: report every part of the outcome on its own log line so it is
+        # easy to scan in the system log, even with a long result object.
+        _LOGGER.warning(
+            "SHiP Anchor compile result: success=%s, bindings_added=%d, warnings=%d, errors=%d, dry_run_payloads=%d",
+            result.success,
+            len(result.bindings_added),
+            len(result.warnings),
+            len(result.errors),
+            len(result.dry_run_payloads),
+        )
+        for binding in result.bindings_added:
+            _LOGGER.warning(
+                "  binding: %s | %s → %s | clusters=%s group=%s",
+                binding.protocol,
+                binding.source_ieee,
+                binding.target_ieee,
+                binding.clusters,
+                binding.group_id,
+            )
+        for warning in result.warnings:
+            _LOGGER.warning("  warning: %s", warning)
+        for error in result.errors:
+            _LOGGER.warning("  error: %s", error)
+        for payload in result.dry_run_payloads:
+            _LOGGER.warning("  payload: %s", payload)
 
     # -----------------------------------------------------------------------
     # Service: ship_anchor.erase_all

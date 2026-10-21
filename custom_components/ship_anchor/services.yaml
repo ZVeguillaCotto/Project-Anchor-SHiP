@@ -1,6 +1,6 @@
 compile:
   name: Compile Offline Bindings
-  description: Compiles Home Assistant automations into native hardware bindings and local SHiP fast-path rules.
+  description: Compiles Home Assistant automations into native hardware bindings and local SHiP fast-path rules. Pass automation_ids to scan saved automations, or pass protocol/source_ieee/targets directly to compile a single binding.
   fields:
     dry_run:
       name: Dry Run
@@ -9,6 +9,21 @@ compile:
       required: false
       selector:
         boolean:
+    automation_ids:
+      name: Automation IDs
+      description: Automation ID(s) to compile, comma-separated. Leave empty to compile every eligible automation in automations.yaml.
+      example: kitchen_button_light
+      required: false
+      selector:
+        text:
+    source_node_id:
+      name: Source Node ID
+      description: Matter or Z-Wave node ID of the source device (used with protocol MATTER or ZWAVE).
+      example: 5
+      required: false
+      selector:
+        number:
+          min: 1
     protocol:
       name: Protocol
       description: Target smart home protocol to compile for.
