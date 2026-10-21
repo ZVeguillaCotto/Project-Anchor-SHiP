@@ -217,7 +217,7 @@ data:
 Review the generated payloads in the Home Assistant logs and check device
 compatibility before deliberately setting `dry_run: false`. A live compile
 writes to devices and may not be reversible for every supported protocol;
-`ship_anchor.erase` only works for protocols with an implemented erase
+`ship_anchor.erase_all` only works for protocols with an implemented erase
 operation. The compiler currently reads automations from `automations.yaml`;
 automations stored only in Home Assistant's UI storage are not included.
 

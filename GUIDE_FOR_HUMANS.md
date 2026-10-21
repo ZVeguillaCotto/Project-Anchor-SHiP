@@ -34,7 +34,7 @@ Picture a smart home as a bustling office building.
 2. **Identifies** which devices can talk directly (not all can — see the guards below).
 3. **Runs pre-flight checks** — makes sure the devices are in the right mode to talk directly (some switches cut power to bulbs by default, which kills the bulb's radio; the compiler fixes that).
 4. **Programs** the binding — the switch now has the bulb's direct address in its memory.
-5. **Saves a log** of what it did, so it can undo it later if you call `ship_anchor.erase`.
+5. **Saves a log** of what it did, so it can undo it later if you call `ship_anchor.erase_all`.
 
 **Supported device types:**
 

@@ -15,9 +15,9 @@ When Home Assistant starts up, it opens this file and asks three things:
 
 It also registers two Home Assistant "services" that any automation or
 dashboard can call:
-  - ship_anchor.compile: "Read my automations and push offline bindings
+  - ship_anchor.compile:   "Read my automations and push offline bindings
     to my devices right now."
-  - ship_anchor.erase:   "Remove all offline bindings I previously pushed."
+  - ship_anchor.erase_all: "Remove all offline bindings I previously pushed."
 
 Think of it like a switchboard operator who (a) loads the office phone book
 from the filing cabinet when arriving in the morning, and (b) listens for
@@ -107,17 +107,23 @@ async def _async_setup_runtime(hass: HomeAssistant) -> None:
         _LOGGER.info("SHiP Anchor compile result: %s", result)
 
     # -----------------------------------------------------------------------
-    # Service: ship_anchor.erase
+    # Service: ship_anchor.erase_all
     # ELI5: Removes all offline bindings previously pushed, restoring devices
     # to their original hub-dependent state.
     # -----------------------------------------------------------------------
     async def handle_erase(call: ServiceCall) -> None:
-        """Handle the ship_anchor.erase service call."""
+        """Handle the ship_anchor.erase_all service call."""
         _LOGGER.info("SHiP Anchor: erasing all offline bindings")
-        await compiler.async_erase_all()
+        try:
+            await compiler.async_erase_all()
+        except Exception:
+            # ELI5: even when an unsupported protocol blocks the erase, the
+            # user should see why in the logs instead of getting silence.
+            _LOGGER.exception("SHiP Anchor: erase_all failed")
+            raise
 
     hass.services.async_register(DOMAIN, "compile", handle_compile)
-    hass.services.async_register(DOMAIN, "erase", handle_erase)
+    hass.services.async_register(DOMAIN, "erase_all", handle_erase)
 
     _LOGGER.info("SHiP Anchor: services registered — ready.")
 
@@ -132,6 +138,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: Any) -> bool:
     """Clean up when the integration is unloaded."""
     if DOMAIN in hass.data:
         hass.services.async_remove(DOMAIN, "compile")
-        hass.services.async_remove(DOMAIN, "erase")
+        hass.services.async_remove(DOMAIN, "erase_all")
     hass.data.pop(DOMAIN, None)
     return True
