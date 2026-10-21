@@ -198,15 +198,43 @@ async def _async_setup_runtime(hass: HomeAssistant) -> None:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: Any) -> bool:
-    """Set up services and persistent state for the configured integration."""
-    await _async_setup_runtime(hass)
+    """Set up services and persistent state for the configured integration.
+
+    ELI5: the services and the binding store are SHARED by every config
+    entry (there is only one switchboard operator, not one per binding).
+    Each entry bumps a reference counter; the runtime is only created on
+    the first entry and only torn down when the last one goes away.
+    """
+    runtime = hass.data.get(DOMAIN)
+    if runtime is None:
+        await _async_setup_runtime(hass)
+        runtime = hass.data[DOMAIN]
+    runtime["entry_count"] = int(runtime.get("entry_count", 0)) + 1
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: Any) -> bool:
-    """Clean up when the integration is unloaded."""
-    if DOMAIN in hass.data:
-        hass.services.async_remove(DOMAIN, "compile")
-        hass.services.async_remove(DOMAIN, "erase_all")
+    """Clean up when the integration is unloaded.
+
+    ELI5: dropping one binding must NOT shut the shared services down for
+    the other bindings. We decrement the reference counter, and only when
+    it reaches zero (the last entry is gone) do we remove the services and
+    the runtime.
+    """
+    runtime = hass.data.get(DOMAIN)
+    if runtime is None:
+        return True
+    remaining = max(0, int(runtime.get("entry_count", 0)) - 1)
+    if remaining > 0:
+        runtime["entry_count"] = remaining
+        _LOGGER.debug(
+            "SHiP Anchor: entry removed, %d binding(s) still active — keeping services",
+            remaining,
+        )
+        return True
+    # Last entry — tear the shared runtime down.
+    hass.services.async_remove(DOMAIN, "compile")
+    hass.services.async_remove(DOMAIN, "erase_all")
     hass.data.pop(DOMAIN, None)
+    _LOGGER.info("SHiP Anchor: last entry removed — services deregistered")
     return True
