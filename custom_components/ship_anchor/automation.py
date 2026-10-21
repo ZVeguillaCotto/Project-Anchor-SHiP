@@ -54,7 +54,7 @@ def parse_ha_automation_dict(
                 name: getattr(device, name, None)
                 for name in (
                     "id", "ieee", "model", "manufacturer", "identifiers",
-                    "connections", "name", "name_by_user", "config_entries",
+                    "connections", "name", "name_by_user", "config_entry_id",
                     "security_class", "security",
                 )
             }
