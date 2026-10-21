@@ -185,6 +185,20 @@ STATIC_DEVICE_QUIRKS: dict[str, dict] = {
         "smart_bulb_value":   1,
         "bindable_clusters":  [CLUSTER_ONOFF, CLUSTER_LEVEL_CTRL],
     },
+    # Inovelli Blue Series 3-Button Smart Switch (VZM32-SN)
+    # ELI5: same family as VZM31 but with three buttons instead of two.
+    # Endpoint 2 is the client output endpoint used for binding.
+    "VZM32-SN": {
+        "manufacturer":       "Inovelli",
+        "source_endpoint":    2,
+        "target_endpoint":    1,
+        "needs_smart_bulb":   True,
+        "smart_bulb_cluster": 0xFC31,
+        "smart_bulb_mfr_code":0x122F,
+        "smart_bulb_attr":    0x0012,
+        "smart_bulb_value":   1,
+        "bindable_clusters":  [CLUSTER_ONOFF, CLUSTER_LEVEL_CTRL, CLUSTER_SCENES],
+    },
     # Aqara H1 Wireless Mini Switch
     "WXKG13LM": {
         "manufacturer":       "Aqara",
@@ -239,6 +253,13 @@ STATIC_DEVICE_QUIRKS: dict[str, dict] = {
         "manufacturer":       "Signify",
         "source_endpoint":    1,
         "target_endpoint":    11,
+        "bindable_clusters":  [CLUSTER_ONOFF, CLUSTER_LEVEL_CTRL, CLUSTER_COLOR_CTRL],
+    },
+    # Philips Hue A19 Gen 1 bulb — target endpoint 11 (older Hue A19 line)
+    "LTA019": {
+        "manufacturer":       "Signify",
+        "source_endpoint":    1,
+        "target_endpoint":    11,   # Hue bulbs use endpoint 11
         "bindable_clusters":  [CLUSTER_ONOFF, CLUSTER_LEVEL_CTRL, CLUSTER_COLOR_CTRL],
     },
     # Innr standard Zigbee bulb — target endpoint 1
@@ -372,32 +393,66 @@ class QuirksInspector:
     ) -> None:
         """
         ELI5: Ask the live zigpy library for the device's full specification.
-        Looks up the device in zigpy's registry of known device quirks (zha-device-handlers)
-        and extracts endpoint IDs and cluster lists dynamically.
+        Looks up the device in zigpy's registry of known device quirks
+        (zha-device-handlers) and extracts endpoint IDs and cluster lists
+        dynamically.
+
+        IMPORTANT: uses `quirk_registry[(manufacturer, model)]` — the
+        string-keyed API. `zigpy.quirks.get_device()` expects a live
+        `zigpy.device.Device` object and will raise
+        `'str' object has no attribute 'get_device'` if given strings.
         """
         try:
-            # Get the device class from zigpy's quirks registry
-            device_cls = self._zigpy_quirks.get_device(manufacturer, model)
-            if not device_cls:
-                # Fallback to static if not registered
+            quirk_registry = getattr(self._zigpy_quirks, "quirk_registry", None)
+            quirk_cls = None
+            if quirk_registry is not None:
+                quirk_cls = quirk_registry.get((manufacturer, model))
+
+            if quirk_cls is None:
+                _LOGGER.debug(
+                    "QuirksInspector: %s/%s not in zigpy quirk_registry — "
+                    "using static DB",
+                    manufacturer, model,
+                )
                 self._apply_static_quirks(result, model)
                 return
 
-            # Inspect endpoint descriptors
-            ep_descs = getattr(device_cls, "replacement", {}).get("endpoints", {})
-            for ep_id, ep_info in ep_descs.items():
-                out_clusters = ep_info.get("output_clusters", [])
-                if CLUSTER_ONOFF in out_clusters or CLUSTER_LEVEL_CTRL in out_clusters:
-                    result.source_endpoint = ep_id
-                    result.bindable_clusters = [
-                        c for c in out_clusters
-                        if c in STANDARD_BIND_CLUSTERS
-                    ]
-                    break
+            # --- Endpoint + cluster discovery from the live quirk class ---
+            ep_descs = getattr(quirk_cls, "replacement", None)
+            if isinstance(ep_descs, dict):
+                ep_descs = ep_descs.get("endpoints", {})
+            if isinstance(ep_descs, dict) and ep_descs:
+                for ep_id, ep_info in ep_descs.items():
+                    out_clusters = (
+                        ep_info.get("output_clusters", [])
+                        if isinstance(ep_info, dict)
+                        else []
+                    )
+                    if CLUSTER_ONOFF in out_clusters or CLUSTER_LEVEL_CTRL in out_clusters:
+                        result.source_endpoint = int(ep_id)
+                        result.bindable_clusters = [
+                            c for c in out_clusters if c in STANDARD_BIND_CLUSTERS
+                        ]
+                        break
 
-            # Apply manufacturer-specific mode overrides from static DB
-            # (live zigpy doesn't store runtime attribute pre-flight values)
-            self._apply_static_quirks(result, model)
+            # --- Apply mode flags (smart-bulb / decoupled / command) from
+            #     the static DB, WITHOUT clobbering the live-discovered
+            #     source_endpoint / target_endpoint / bindable_clusters.
+            static_quirk = STATIC_DEVICE_QUIRKS.get(model)
+            if static_quirk:
+                if static_quirk.get("needs_smart_bulb"):
+                    result.needs_smart_bulb_mode = True
+                if static_quirk.get("needs_decoupled"):
+                    result.needs_decoupled_mode = True
+                if static_quirk.get("needs_command_mode"):
+                    result.needs_command_mode = True
+                if static_quirk.get("needs_detach_relay"):
+                    result.needs_detach_relay = True
+                # Only fill bindable_clusters if live discovery found none.
+                if not result.bindable_clusters:
+                    result.bindable_clusters = list(
+                        static_quirk.get("bindable_clusters", [CLUSTER_ONOFF])
+                    )
 
         except Exception as exc:  # pylint: disable=broad-except
             _LOGGER.warning(
@@ -439,6 +494,10 @@ class QuirksInspector:
 
         if result.needs_smart_bulb_mode:
             # Inovelli: Write Smart Bulb Mode attribute on Manufacturer Cluster 0xFC31
+            # ELI5: the manufacturer cluster lives on the source's client
+            # output endpoint (endpoint 2 for VZM31/VZM32/VZM35), not
+            # endpoint 1.  Using result.source_endpoint keeps this correct
+            # even if the device's topology differs.
             calls.append({
                 "action": "zha.set_zigbee_cluster_attribute",
                 "description": (
@@ -448,7 +507,7 @@ class QuirksInspector:
                 ),
                 "data": {
                     "ieee": result.ieee,
-                    "endpoint_id": 1,
+                    "endpoint_id": result.source_endpoint,
                     "cluster_id": 0xFC31,       # Inovelli mfr cluster (64561)
                     "cluster_type": "in",
                     "attribute": 0x0012,         # smart_bulb_mode (18)
