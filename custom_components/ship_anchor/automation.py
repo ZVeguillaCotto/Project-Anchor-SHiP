@@ -198,13 +198,79 @@ def parse_ha_automation_dict(
         if "shelly" in signature:
             protocol_hints.append("SHELLY")
 
+    # ELI5: If the trigger's domain didn't tell us which protocol this
+    # automation talks to (e.g., the automation uses an entity-state trigger
+    # like "when the door sensor is on"), we look at every entity in the
+    # automation and ask Home Assistant's entity registry which integration
+    # each one belongs to. "zha", "zwave_js", "matter", etc. map 1-to-1 to
+    # the protocols SHiP Anchor knows how to program.
+    def _fallback_protocol_from_entities() -> Protocol:
+        entity_map = {
+            "zha": "ZIGBEE_ZHA",
+            "zigbee2mqtt": "ZIGBEE_Z2M",
+            "zwave_js": "ZWAVE",
+            "zwave": "ZWAVE",
+            "matter": "MATTER",
+            "shelly": "SHELLY",
+            "tasmota": "TASMOTA",
+        }
+        seen: set = set()
+        for trigger in triggers:
+            if not isinstance(trigger, dict):
+                continue
+            for entity_id in ids_from(trigger.get("entity_id")):
+                if entity_id in seen:
+                    continue
+                seen.add(entity_id)
+                if hasattr(entity_registry, "async_get"):
+                    entity = entity_registry.async_get(entity_id)
+                elif isinstance(entity_registry, dict):
+                    entity = entity_registry.get(entity_id)
+                else:
+                    continue
+                if not entity:
+                    continue
+                integration = (
+                    entity.get("platform") if isinstance(entity, dict)
+                    else getattr(entity, "platform", None)
+                )
+                if integration in entity_map:
+                    return PROTOCOL_ALIASES[entity_map[integration]]
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            target = action.get("target") or {}
+            if isinstance(target, dict):
+                entity_ids = ids_from(target.get("entity_id"))
+            else:
+                entity_ids = []
+            for entity_id in entity_ids or ids_from(action.get("entity_id")):
+                if entity_id in seen:
+                    continue
+                seen.add(entity_id)
+                if hasattr(entity_registry, "async_get"):
+                    entity = entity_registry.async_get(entity_id)
+                elif isinstance(entity_registry, dict):
+                    entity = entity_registry.get(entity_id)
+                else:
+                    continue
+                if not entity:
+                    continue
+                integration = (
+                    entity.get("platform") if isinstance(entity, dict)
+                    else getattr(entity, "platform", None)
+                )
+                if integration in entity_map:
+                    return PROTOCOL_ALIASES[entity_map[integration]]
+        return Protocol.UNKNOWN
+
     protocol = next(
         (
             PROTOCOL_ALIASES[hint.upper()]
             for hint in protocol_hints
             if isinstance(hint, str) and hint.upper() in PROTOCOL_ALIASES
         ),
-        Protocol.UNKNOWN,
+        _fallback_protocol_from_entities(),
     )
     normalized.update({
         "protocol": protocol.name,

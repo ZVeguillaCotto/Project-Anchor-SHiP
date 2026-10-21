@@ -199,6 +199,17 @@ class AnchorCompiler:
         )
         protocol = self._detect_protocol(config)
         config["protocol"] = protocol.name
+        automation_label = str(
+            auto_config.get("alias")
+            or auto_config.get("id")
+            or auto_config.get("automation_id")
+            or "unknown"
+        )
+        _LOGGER.debug(
+            "SHiP Anchor: compiling automation '%s' → protocol=%s",
+            automation_label,
+            protocol.name,
+        )
         has_ha_steps = any(
             key in config for key in ("trigger", "triggers", "action", "actions")
         )
@@ -265,7 +276,10 @@ class AnchorCompiler:
         if protocol == Protocol.UNKNOWN:
             result.success = False
             result.errors.append(
-                "Unable to compile automation because its protocol could not be detected."
+                "Automation '{}' — protocol could not be detected. "
+                "Use a device trigger with a supported domain (zha, zwave_js, "
+                "matter, shelly, tasmota, zigbee2mqtt), or add an explicit "
+                "'protocol:' key to the automation.".format(automation_label)
             )
             return
         await self._dispatcher.compile(protocol, self, config, result, dry_run)
