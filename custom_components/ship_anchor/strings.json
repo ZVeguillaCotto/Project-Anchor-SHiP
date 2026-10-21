@@ -2,9 +2,44 @@
   "config": {
     "step": {
       "user": {
-        "title": "SHiP Anchor",
-        "description": "Add SHiP Anchor to Home Assistant. No settings are required."
+        "title": "SHiP Anchor — Step 1 of 4: Source",
+        "description": "Which switch or button will be the SOURCE? This is the device you will tap or hold. {mode}",
+        "data": {
+          "source_device": "Source switch or button"
+        }
+      },
+      "target": {
+        "title": "SHiP Anchor — Step 2 of 4: Target",
+        "description": "Which lights, valves, or locks should {source} control? Pick at least one target below.",
+        "data": {
+          "targets": "Target device(s)",
+          "use_group": "Use a ZCL group (recommended for 3+ targets)",
+          "group_name": "Group name (optional)"
+        }
+      },
+      "behavior": {
+        "title": "SHiP Anchor — Step 3 of 4: Behaviour",
+        "description": "What should the tap or hold do? {target_count} target(s) will receive this action.",
+        "data": {
+          "trigger": "Trigger",
+          "brightness": "Brightness (1-255)",
+          "color_temp_mireds": "Colour temperature in mireds (140 warm → 500 cool, optional)"
+        }
+      },
+      "finish": {
+        "title": "SHiP Anchor — Step 4 of 4: Preview or Apply",
+        "description": "Review: {source} → {target_count} target(s) over {protocol}. Dry-run previews the payloads in your log without touching any hardware.",
+        "data": {
+          "dry_run": "Dry run (preview only, do not send to devices)"
+        }
       }
+    },
+    "error": {
+      "source_not_found": "That source device is no longer in your device registry. Please pick another one.",
+      "target_required": "Pick at least one target device, or enable 'Use a ZCL group' and give the group a name."
+    },
+    "abort": {
+      "single_instance_allowed": "SHiP Anchor is already set up on this Home Assistant. You do not need to add it again."
     }
   }
 }
