@@ -70,7 +70,9 @@ async def _async_setup_runtime(hass: HomeAssistant) -> None:
     if DOMAIN in hass.data:
         return
 
-    _LOGGER.info(
+    # ELI5: Home Assistant hides INFO logs from custom components by default,
+    # so the user-visible milestones use WARNING to guarantee they appear.
+    _LOGGER.warning(
         "SHiP Anchor v0.1 starting up — Smart Home Independent Protocol"
     )
 
@@ -96,15 +98,21 @@ async def _async_setup_runtime(hass: HomeAssistant) -> None:
         automation_ids: list[str] = call.data.get("automation_ids", [])
         dry_run: bool = call.data.get("dry_run", True)
 
-        _LOGGER.info(
+        _LOGGER.warning(
             "SHiP Anchor: compile service called (automation_ids=%s, dry_run=%s)",
             automation_ids,
             dry_run,
         )
-        result = await compiler.async_compile(
-            automation_ids=automation_ids, dry_run=dry_run
-        )
-        _LOGGER.info("SHiP Anchor compile result: %s", result)
+        try:
+            result = await compiler.async_compile(
+                automation_ids=automation_ids, dry_run=dry_run
+            )
+        except Exception:
+            # ELI5: a failed compile should never be silent — the user must
+            # be able to see what went wrong in the log.
+            _LOGGER.exception("SHiP Anchor: compile service failed")
+            raise
+        _LOGGER.warning("SHiP Anchor compile result: %s", result)
 
     # -----------------------------------------------------------------------
     # Service: ship_anchor.erase_all
@@ -113,7 +121,7 @@ async def _async_setup_runtime(hass: HomeAssistant) -> None:
     # -----------------------------------------------------------------------
     async def handle_erase(call: ServiceCall) -> None:
         """Handle the ship_anchor.erase_all service call."""
-        _LOGGER.info("SHiP Anchor: erasing all offline bindings")
+        _LOGGER.warning("SHiP Anchor: erasing all offline bindings")
         try:
             await compiler.async_erase_all()
         except Exception:
@@ -125,7 +133,7 @@ async def _async_setup_runtime(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, "compile", handle_compile)
     hass.services.async_register(DOMAIN, "erase_all", handle_erase)
 
-    _LOGGER.info("SHiP Anchor: services registered — ready.")
+    _LOGGER.warning("SHiP Anchor: services registered — ready.")
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: Any) -> bool:

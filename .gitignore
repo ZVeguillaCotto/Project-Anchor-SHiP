@@ -1,0 +1,14 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Editor history/backups
+.history/
+*.swp
+
+# Home Assistant storage
+*.storage
+**/.storage/
+
+# OS noise
+.DS_Store
