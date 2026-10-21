@@ -1,0 +1,42 @@
+compile:
+  name: Compile Offline Bindings
+  description: Compiles Home Assistant automations into native hardware bindings and local SHiP fast-path rules.
+  fields:
+    dry_run:
+      name: Dry Run
+      description: When true, previews generated payloads in logs without sending commands to hardware.
+      example: true
+      required: false
+      selector:
+        boolean:
+    protocol:
+      name: Protocol
+      description: Target smart home protocol to compile for.
+      example: ZIGBEE_ZHA
+      required: false
+      selector:
+        text:
+    source_ieee:
+      name: Source IEEE Address
+      description: IEEE MAC address of the source switch or button.
+      example: "00:0d:6f:00:05:7d:2d:34"
+      required: false
+      selector:
+        text:
+    source_model:
+      name: Source Model
+      description: Model identifier for quirk and pre-flight auto-discovery.
+      example: "VZM31-SN"
+      required: false
+      selector:
+        text:
+    targets:
+      name: Targets
+      description: List of target devices (bulbs, valves, locks).
+      required: false
+      selector:
+        object:
+
+erase_all:
+  name: Erase All Offline Bindings
+  description: Removes all previously programmed offline hardware bindings and resets configurations.
