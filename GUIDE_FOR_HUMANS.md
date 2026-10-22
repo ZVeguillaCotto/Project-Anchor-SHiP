@@ -487,7 +487,87 @@ DevGroupSend 129=@|18
 
 ---
 
-## Part 12: Ask an AI Agent with MCP
+## Part 12: Multi-Way Switches & Keeping Multiple Controllers in Sync
+
+### Layer 1 — The Kitchen-Table Explanation (ELI5)
+
+Imagine the classic bedroom **3-way switch**: one switch by the door, one by
+the bed, both controlling the same bedside lamp. In a normal house they
+"talk to each other" through the wiring in the wall — flip either one and
+the lamp, and the other switch, reflect the change immediately. No remote,
+no app, no internet.
+
+Now imagine those same two switches are **smart devices**, and your
+Home Assistant hub is rebooted, or the internet is down. Most smart
+switches go dumb: each one only talks to the cloud, so pressing Switch A
+doors nothing on Switch B — and the bulbs stop staying in sync.
+
+SHiP fixes this the way real 3-way wiring works. Both switches and all the
+bulbs share one **local group channel** — a tiny walkie-talkie frequency
+that only your devices know about. Because they all listen to that one
+channel:
+
+- Pressing **Switch A by the door** is *instantly heard* by **Switch B by
+  the bed** and by every bulb in the group.
+- The bulbs update their lights, and each switch updates its little LED or
+  rocker state, to match — **without the hub, the router, or the cloud in
+  the middle**.
+- It all happens in well under one millisecond on the air (a 19-byte
+  message at 250 kbps), so it feels exactly like a normal 3-way switch.
+
+One more thing keeps this from turning into a shouting match (see Layer 2):
+when a switch *receives* the "the lights changed" announcement, it quietly
+updates itself **without shouting a confirmation back** — otherwise every
+device would reply to every other device, forever.
+
+### Layer 2 — The Under-the-Hood Engineering
+
+**The shared Group ID is the broadcast bus.**
+
+Every SHiP frame carries a `group_id` (byte 10 of the 19-byte frame) — a
+0–255 channel number that only the devices in one logical group use. A
+multi-way setup is exactly one group:
+
+- Each switch is a **sender**: on button press it encodes a 19-byte frame
+  with its group's `group_id`, a domain, and the gesture (single/double/
+  triple tap, hold, release).
+- Each bulb and each *other* switch is a **receiver**: it accepts the frame
+  if `group_id` matches its own and the SipHash-2-4 tag and anti-replay
+  counter check out — then applies the action locally (LEAT rule or relay
+  toggle) and updates its own reflected state.
+- Because the frame is a broadcast on the shared group channel, the hub is
+  never a relay: it is completely absent from the path. This is what keeps
+  multi-way switching working during a full hub outage.
+
+**The `NoStatusShare` flag (gesture `0x8`) stops the echo war.**
+
+Naively, every receiver that updates its state would want to announce the
+new state back to the group — and each of those announcements would trigger
+another round of announcements, cascading forever (the classic
+"status echo loop").
+
+SHiP borrows the fix from Tasmota's Device Groups (`DevGroupShare
+0xffffffff,0` = "receive everything, send nothing back") and encodes it as a
+dedicated gesture in the lower nibble of byte 13 (`cmd_click`):
+
+| Gesture nibble | Meaning |
+|---|---|
+| `0x1`–`0x5` | 1× to 5× click |
+| `0x6` | Hold |
+| `0x7` | Release |
+| **`0x8`** | **`SHIP_GESTURE_NO_STATUS_SHARE` — "apply this change, but do NOT broadcast your new status back"** |
+
+So a multi-way scene change travels exactly once around the group: the
+pressing switch broadcasts the change with the `0x8` lock, every peer
+switch and bulb applies it locally, and none of them re-announce. One radio
+burst, N synchronized devices, zero echo loops — with the hub offline.
+
+*(The C core verifies this exact flag in Test 9 — "Tasmota NoStatusShare
+flag (gesture = 0x8)" — see `sim/test_ship_core.c`.)*
+
+---
+
+## Part 13: Ask an AI Agent with MCP
 
 ### Layer 1 — The Kitchen-Table Explanation
 

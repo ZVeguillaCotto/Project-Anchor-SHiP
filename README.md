@@ -29,6 +29,7 @@ SHiP Anchor reads your existing Home Assistant automations and quietly programs 
 Think of it like programming your TV remote to also work with the neighbours' TV. The remote (switch) and the TV (light) remember each other's codes. The operator (hub) is no longer needed for that relationship.
 
 **Supported protocols:**
+- **Multi-way switch offline sync** — N switches + shared bulbs stay in exact sync via one SHiP Group ID broadcast channel, with the `NoStatusShare` gesture (`0x8`) suppressing status echo loops — no hub, router, or cloud in the path
 - **Zigbee** (ZHA & Zigbee2MQTT) — direct device-to-device binding with auto-discovery of vendor quirks (Inovelli, Aqara, Tuya, Philips Hue, SONOFF)
 - **Matter 1.3–1.6** — two-step ACL + Binding table writes via `matterjs-server` WebSocket API
 - **Z-Wave 700/800** — Association Group programming via `zwave_js` (with ZWLR guard)
