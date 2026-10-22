@@ -78,9 +78,13 @@ ship_fastpath:
   group_id: 1
 
   # ELI5: Your 16-byte secret key — 32 hex characters.
-  #       CHANGE THIS to a random value. Keep it secret!
-  #       All devices in the same group MUST use the same key.
-  group_key: "deadbeefcafebabe0102030405060708"
+  #       >>> EXAMPLE-ONLY-CHANGE-ME <<<
+  #       The value below is a well-known PLACEHOLDER used in docs/examples so
+  #       two demo devices can interoperate. It is NOT a real secret: anyone
+  #       who reads this file can forge SHiP frames. Before flashing, replace
+  #       it with a random 16-byte key (e.g. `openssl rand -hex 16`). All
+  #       devices in the same group MUST use the same generated key.
+  group_key: "deadbeefcafebabe0102030405060708"  # EXAMPLE-ONLY-CHANGE-ME
 
   # ELI5: How often battery-powered sensors wake up to check for messages.
   #       Set to 0s for always-on devices. Set to 5s for battery devices.
@@ -207,10 +211,12 @@ on_boot:
 # ============================================================================
 # OTA (Over-the-Air Firmware Updates)
 # ELI5: Lets you update the firmware without plugging in a USB cable.
+#       >>> EXAMPLE-ONLY-CHANGE-ME <<< the password below is a placeholder;
+#       set a strong, unique value before enabling OTA.
 # ============================================================================
 ota:
   - platform: esphome
-    password: "your-ota-password-here"
+    password: "your-ota-password-here"  # EXAMPLE-ONLY-CHANGE-ME
 
 # ============================================================================
 # WIFI (Optional — for OTA and ESPHome dashboard only)
@@ -221,6 +227,8 @@ ota:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  ap:
+  ap# >>> EXAMPLE-ONLY-CHANGE-ME <<< placeholder AP password — set a strong,
+    # unique value (or delete the `ap:` block if you don't use soft-AP mode).
+    password: "shipanchor"  # EXAMPLE-ONLY-CHANGE-ME
     ssid: "ship-switch-kitchen-ap"
     password: "shipanchor"

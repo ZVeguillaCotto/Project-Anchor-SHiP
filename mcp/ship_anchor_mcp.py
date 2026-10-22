@@ -205,6 +205,9 @@ async def _call_tool(name: str, arguments: dict) -> Any:
 
 
 async def _run_demo() -> dict:
+    # >>> MOCK TEST VECTOR ONLY <<< — a well-known placeholder key used purely
+    # so the demo produces a deterministic, reproducible frame. It is NOT a
+    # real secret and must never be used to secure a live device.
     key_hex = "deadbeefcafebabe0102030405060708"
     frame_args = {
         "pan_id": 0x1234,

@@ -106,7 +106,9 @@ static void test_native_rx_callback(const ship_frame_19b_t *frame, void *user_ct
         } \
     } while (0)
 
-/* Known test key: 16 bytes */
+/* >>> MOCK TEST VECTOR ONLY <<< — a well-known placeholder key used purely for
+ * deterministic unit tests. It is NOT a real secret and must never be used to
+ * secure a live device. */
 static const uint8_t TEST_KEY[SHIP_KEY_SIZE] = {
     0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
     0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,

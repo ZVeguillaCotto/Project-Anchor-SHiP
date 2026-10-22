@@ -113,7 +113,16 @@ class ProtocolDispatcher:
         result: CompileResult,
         dry_run: bool,
     ) -> None:
-        await self._handler(protocol).compile(compiler, config, result, dry_run)
+        # ELI5: a handler can reject a binding (e.g. an unsafe group name or
+        # a malformed IP). We turn that rejection into a per-binding error
+        # message so one bad device does not abort the whole compile.
+        try:
+            await self._handler(protocol).compile(compiler, config, result, dry_run)
+        except (ValueError, TypeError) as exc:
+            result.success = False
+            result.errors.append(
+                "{}: {}".format(protocol.name, exc)
+            )
 
     async def erase(self, compiler: Any, binding: BindingRecord) -> bool:
         aliases = {

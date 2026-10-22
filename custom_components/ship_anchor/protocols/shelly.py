@@ -12,19 +12,58 @@ and Start RPC requests; delivery uses the compiler's HTTP transport.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from . import BindingRecord, CompileResult, ProtocolHandler
+
+# Reuse the IPv4 validator from the Tasmota handler (single source of truth).
+try:
+    from .tasmota import _validate_ipv4
+except ImportError:  # pragma: no cover - fallback if module layout changes
+    _IPV4_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+
+    def _validate_ipv4(value: str, field: str) -> str:
+        if not _IPV4_RE.match(value):
+            raise ValueError(
+                "{} must be a valid IPv4 address, got {!r}".format(field, value)
+            )
+        for octet in value.split("."):
+            if int(octet) > 255:
+                raise ValueError(
+                    "{} has an out-of-range octet: {!r}".format(field, value)
+                )
+        return value
+
+
+# ELI5: the target command is written inside a JavaScript string in the
+# generated Shelly script, so a quote or backslash could break out of the
+# string and run arbitrary JS on the device. We only allow a plain token.
+_SAFE_COMMAND = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+_SAFE_SCRIPT_NAME = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
 class ShellyHandler(ProtocolHandler):
     async def compile(
         self, compiler: Any, cfg: dict, result: CompileResult, dry_run: bool
     ) -> None:
-        shelly_ip = cfg.get("shelly_ip", "192.168.1.100")
-        target_ip = cfg.get("target_ip", "192.168.1.200")
-        target_command = cfg.get("target_command", "on")
-        script_name = cfg.get("script_name", "ship_anchor_relay")
+        shelly_ip = _validate_ipv4(str(cfg.get("shelly_ip", "192.168.1.100")), "shelly_ip")
+        target_ip = _validate_ipv4(str(cfg.get("target_ip", "192.168.1.200")), "target_ip")
+        target_command = str(cfg.get("target_command", "on"))
+        if not _SAFE_COMMAND.match(target_command):
+            raise ValueError(
+                "target_command must be a plain token (letters, digits, '_', "
+                "'-'); quotes and backslashes are not allowed because this "
+                "value is embedded in a JavaScript string. Got {!r}".format(
+                    target_command
+                )
+            )
+        script_name = str(cfg.get("script_name", "ship_anchor_relay"))
+        if not _SAFE_SCRIPT_NAME.match(script_name):
+            raise ValueError(
+                "script_name must be a safe identifier (letters, digits, "
+                "'.', '_', '-'). Got {!r}".format(script_name)
+            )
         code = """
 // SHiP Anchor — Shelly Local Relay Script
 // ELI5: A button press asks the target device to act without the hub.
