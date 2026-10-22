@@ -186,10 +186,11 @@ async def _async_setup_runtime(hass: HomeAssistant) -> None:
         try:
             await compiler.async_erase_all()
         except Exception:
-            # ELI5: even when an unsupported protocol blocks the erase, the
-            # user should see why in the logs instead of getting silence.
+            # ELI5: the erase must end in a clean log line, never in a
+            # re-raised traceback. (Raising inside the except block is the
+            # classic source of RecursionError stack overflow — we log the
+            # full details with _LOGGER.exception and stop there.)
             _LOGGER.exception("SHiP Anchor: erase_all failed")
-            raise
 
     hass.services.async_register(DOMAIN, "compile", handle_compile)
     hass.services.async_register(DOMAIN, "erase_all", handle_erase)

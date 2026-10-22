@@ -225,19 +225,30 @@ async def drill_2_compiler() -> TestResult:
             "timestamp": "",
         }]
     }
+    erase_store = MockStore()
     erase_compiler = AnchorCompiler(
-        hass=None, store=MockStore(), stored_data=previous_bindings
+        hass=None, store=erase_store, stored_data=previous_bindings
     )
+    # v0.1.9 surgical fix: erase_all must complete cleanly even when a
+    # protocol has no device-side undo (ZHA). The local record is cleared
+    # and the store is saved; the user is told which bindings need a
+    # manual reset. It must NOT raise or leave the store untouched.
+    erase_completed_clean = False
     try:
         await erase_compiler.async_erase_all()
-    except RuntimeError:
-        erase_preserves_unsupported = previous_bindings["bindings"] != []
+        erase_completed_clean = (
+            previous_bindings["bindings"] == []
+            and erase_store.saved is not None
+            and erase_store.saved.get("bindings") == []
+        )
+    except Exception:
+        erase_completed_clean = False
+    if erase_completed_clean:
+        details.append(ok(
+            "Unsupported ZHA erase completes cleanly, store cleared ✓"
+        ))
     else:
-        erase_preserves_unsupported = False
-    if erase_preserves_unsupported:
-        details.append(ok("Unsupported ZHA erase retains its recovery record ✓"))
-    else:
-        details.append(fail("Unsupported erase must preserve its recovery record"))
+        details.append(fail("erase_all must complete cleanly for unsupported protocols"))
         all_pass = False
 
     normalized_ha = parse_ha_automation_dict(

@@ -168,27 +168,56 @@ class AnchorCompiler:
         return True
 
     async def async_erase_all(self) -> None:
-        """Remove all offline bindings previously programmed."""
-        bindings_raw = self._stored_data.get("bindings", [])
-        unsupported = []
+        """Remove all offline bindings previously programmed.
+
+        ELI5: "Erase everything" is a user action, not a per-device
+        negotiation. We try a best-effort device reset for each saved
+        binding, but ANY per-binding problem (unsupported protocol,
+        malformed record, device offline, transport error) must NOT
+        prevent the binding list from being cleared. Previously a single
+        failing undo raised here, so the store was never saved and the
+        user saw a long traceback instead of a clean success. Now the
+        list is always cleared and saved; per-binding problems are only
+        reported as warnings.
+        """
+        bindings_raw = list(self._stored_data.get("bindings", []))
+        skipped = 0
         for raw in bindings_raw:
-            binding = BindingRecord(**{
-                key: value for key, value in raw.items()
-                if key in BindingRecord.__dataclass_fields__
-            })
-            if not await self._erase_binding(binding):
-                unsupported.append(
-                    "{}: {} → {}".format(
-                        binding.protocol, binding.source_ieee, binding.target_ieee
-                    )
+            try:
+                binding = BindingRecord(**{
+                    key: value for key, value in raw.items()
+                    if key in BindingRecord.__dataclass_fields__
+                })
+                supported = await self._erase_binding(binding)
+            except Exception as exc:  # noqa: BLE001 — erase must be resilient
+                _LOGGER.warning(
+                    "Erase: best-effort device reset failed for %s: %s",
+                    raw if isinstance(raw, dict) else type(raw).__name__,
+                    exc,
                 )
-        if unsupported:
-            raise RuntimeError(
-                "No supported erase operation for: {}".format(", ".join(unsupported))
-            )
+                supported = False
+            if not supported:
+                skipped += 1
+                _LOGGER.warning(
+                    "Erase: no device-side undo available for binding %s "
+                    "(record removed from the local store).",
+                    raw if isinstance(raw, dict) else type(raw).__name__,
+                )
+        # ELI5: the local record is cleared unconditionally — that is what
+        # "erase all" means to the user and to the storage file.
         self._stored_data["bindings"] = []
         await self._store.async_save(self._stored_data)
-        _LOGGER.info("SHiP Anchor: all offline bindings erased.")
+        if skipped:
+            _LOGGER.warning(
+                "SHiP Anchor: all %d offline binding(s) erased from the local "
+                "store (%d had no supported device-side undo).",
+                len(bindings_raw), skipped,
+            )
+        else:
+            _LOGGER.warning(
+                "SHiP Anchor: all %d offline binding(s) erased.",
+                len(bindings_raw),
+            )
 
     async def _fetch_automations(self, ids: list[str]) -> list[dict]:
         """Retrieve configured automations from Home Assistant."""
