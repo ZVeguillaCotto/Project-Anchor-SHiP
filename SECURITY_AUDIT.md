@@ -90,6 +90,21 @@ compile — so one bad binding reports a clean message while the others proceed.
 - The MCP server enforces `dry_run` semantics in its tools so a mis-configured
   caller cannot accidentally actuate devices.
 
+### 2.6 Erase robustness (v0.1.9) — FIXED
+
+**Risk:** `ship_anchor.erase_all` aborted the moment any one binding could
+not be undone (unsupported protocol, offline device, or malformed record),
+leaving `.storage/ship_anchor.bindings` untouched and re-raising into the
+service handler — surfacing as a long traceback (perceived as a recursion
+stack overflow) instead of a clean result.
+
+**Fix:** `async_erase_all()` now treats the device-side undo as best-effort
+per binding (failures logged as warnings) and *always* clears the binding
+list, saves the store, and logs a clean success warning. The service
+handler no longer re-raises inside its `except` block (the classic
+RecursionError amplifier); it logs full details and stops. `Drill 2` now
+asserts the new clean-completion contract.
+
 ## 3. Verification evidence
 
 | Check | Command | Result |
