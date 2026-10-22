@@ -22,8 +22,9 @@
         "description": "What should the tap or hold do? {target_count} target(s) will receive this action.",
         "data": {
           "trigger": "Trigger",
-          "brightness": "Brightness (1-255)",
-          "color_temp_mireds": "Colour temperature in mireds (140 warm → 500 cool, optional)"
+          "brightness": "Brightness (0-255)",
+          "color_temp_mireds": "Colour temperature in mireds (153 warm → 500 cool, optional)",
+          "transition_seconds": "Transition time in seconds (how fast the light fades, optional)"
         }
       },
       "finish": {
@@ -39,7 +40,23 @@
       "target_required": "Pick at least one target device, or enable 'Use a ZCL group' and give the group a name."
     },
     "abort": {
-      "single_instance_allowed": "SHiP Anchor is already set up on this Home Assistant. You do not need to add it again."
+      "single_instance_allowed": "SHiP Anchor is already set up on this Home Assistant. You do not need to add it again.",
+      "restart_wizard": "Opening the setup wizard again. Pick the source, targets and behaviour to re-apply this binding."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "SHiP Anchor — Manage Bindings",
+        "description": "You currently have {binding_count} offline binding(s) baked in:\n\n{bindings}\n\nChoose what to do next.",
+        "data": {
+          "action": "Action"
+        }
+      }
+    },
+    "error": {
+      "no_runtime": "The SHiP Anchor runtime is not loaded. Restart Home Assistant and try again.",
+      "erase_failed": "Erase failed. Check the system log for details."
     }
   }
 }

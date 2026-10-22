@@ -254,12 +254,16 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             {"value": dev_id, "label": name} for dev_id, name in targets
         ]
 
+        # ELI5: multi-select — the user can pick any number of target
+        # devices in one go. SHiP Anchor will automatically escalate to a
+        # ZCL group binding if more than two targets are chosen (to avoid
+        # the "popcorn effect" where lights turn on one at a time).
         schema = vol.Schema(
             {
                 vol.Required("targets"): SelectSelector(
                     SelectSelectorConfig(
                         options=target_options,
-                        mode=SelectSelectorMode.DROPDOWN,
+                        mode=SelectSelectorMode.MULTIPLE,
                     )
                 ),
                 vol.Optional("use_group", default=False): bool,
@@ -289,15 +293,19 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             trigger = str(user_input.get("trigger", "1x Tap"))
             brightness = int(user_input.get("brightness", 100))
-            brightness = max(1, min(255, brightness))
+            brightness = max(0, min(255, brightness))
             color_temp = user_input.get("color_temp_mireds")
             if color_temp is not None:
-                color_temp = int(max(140, min(500, color_temp)))
+                color_temp = int(max(153, min(500, color_temp)))
+            transition = user_input.get("transition_seconds")
+            if transition is not None:
+                transition = int(max(0, min(60, transition)))
 
             inp.update({  # type: ignore[attr-defined]
                 "trigger": trigger,
                 "brightness": brightness,
                 "color_temp_mireds": color_temp,
+                "transition_seconds": transition,
             })
             return await self.async_step_finish()
 
@@ -310,10 +318,13 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
                 ),
                 vol.Required("brightness", default=100): NumberSelector(
-                    NumberSelectorConfig(min=1, max=255, step=1, unit_of_measurement="%")
+                    NumberSelectorConfig(min=0, max=255, step=1, unit_of_measurement="%")
                 ),
                 vol.Optional("color_temp_mireds"): NumberSelector(
-                    NumberSelectorConfig(min=140, max=500, step=1, unit_of_measurement="mireds")
+                    NumberSelectorConfig(min=153, max=500, step=1, unit_of_measurement="mireds")
+                ),
+                vol.Optional("transition_seconds"): NumberSelector(
+                    NumberSelectorConfig(min=0, max=60, step=1, unit_of_measurement="s")
                 ),
             }
         )
@@ -367,6 +378,8 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 config["brightness"] = inp["brightness"]
             if inp.get("color_temp_mireds") is not None:
                 config["color_temp_mireds"] = inp["color_temp_mireds"]
+            if inp.get("transition_seconds") is not None:
+                config["transition_seconds"] = inp["transition_seconds"]
 
             compile_summary: dict[str, Any] = {
                 "success": False,
@@ -421,6 +434,7 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "trigger": inp.get("trigger", ""),
                 "brightness": inp.get("brightness"),
                 "color_temp_mireds": inp.get("color_temp_mireds"),
+                "transition_seconds": inp.get("transition_seconds"),
                 "compile": compile_summary,
             }
             return self.async_create_entry(title=title, data=data)
@@ -513,5 +527,92 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         results.sort(key=lambda pair: -scores.get(pair[0], 0))
         return results
 
+    @classmethod
+    def async_get_options_flow(cls, config_entry: Any) -> Any:
+        """ELI5: expose the options flow so the user can click
+        'Configure' on the integration card later to view / edit / erase
+        bindings without redoing the whole wizard."""
+        return ShipAnchorOptionsFlow(config_entry)
 
-__all__ = ["ShipAnchorConfigFlow"]
+
+class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
+    """
+    ELI5: a small "control panel" that shows every binding SHiP Anchor
+    has baked in, and lets the user erase one (or all of them) with a
+    single click. No new hardware is programmed here — this flow is
+    read + undo only.
+    """
+
+    def __init__(self, config_entry: Any) -> None:
+        self._config_entry = config_entry
+
+    def _compiler(self) -> Any:
+        """Fetch the shared compiler, or None if the integration isn't
+        fully set up yet."""
+        runtime = self.hass.data.get(DOMAIN, {})
+        return runtime.get("compiler")
+
+    async def async_step_init(self, user_input: dict | None = None):
+        """ELI5: show the list of current bindings and offer actions."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            action = str(user_input.get("action", "list"))
+
+            if action == "erase_all":
+                compiler = self._compiler()
+                if compiler is None:
+                    errors["base"] = "no_runtime"
+                else:
+                    try:
+                        await compiler.async_erase_all()
+                    except Exception as exc:  # noqa: BLE001
+                        errors["base"] = "erase_failed"
+                        _LOGGER.exception("Options flow: erase_all failed")
+                        del exc
+                    else:
+                        return self.async_create_entry(title="", data={
+                            "erase_result": "success",
+                        })
+            elif action == "recompile":
+                # ELI5: re-run the wizard so the user can tweak the
+                # behaviour and re-apply it.
+                return self.async_abort(reason="restart_wizard")
+
+        compiler = self._compiler()
+        bindings = []
+        if compiler is not None:
+            bindings = compiler.list_bindings()
+
+        schema = vol.Schema(
+            {
+                vol.Required("action", default="list"): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            {"value": "list", "label": "View current bindings"},
+                            {"value": "erase_all", "label": "Erase ALL bindings"},
+                            {"value": "recompile", "label": "Edit (re-run wizard)"},
+                        ],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(
+            step_id="init",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={
+                "binding_count": str(len(bindings)),
+                "bindings": (
+                    "\n".join(
+                        "• {}  {} → {}".format(b.protocol, b.source_ieee, b.target_ieee)
+                        for b in bindings
+                    )
+                    if bindings
+                    else "(none)"
+                ),
+            },
+        )
+
+
+__all__ = ["ShipAnchorConfigFlow", "ShipAnchorOptionsFlow"]

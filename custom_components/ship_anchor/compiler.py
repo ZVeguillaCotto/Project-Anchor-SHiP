@@ -103,6 +103,70 @@ class AnchorCompiler:
         await self._compile_automation(parsed, result, dry_run)
         return result
 
+    def list_bindings(self) -> list[BindingRecord]:
+        """
+        ELI5: return every binding that SHiP Anchor has previously saved
+        (whether from a wizard run or a service call). Used by the
+        options flow to let the user *see* what is currently baked in.
+        """
+        out: list[BindingRecord] = []
+        for raw in self._stored_data.get("bindings", []):
+            try:
+                out.append(BindingRecord(**{
+                    key: value for key, value in raw.items()
+                    if key in BindingRecord.__dataclass_fields__
+                }))
+            except (TypeError, ValueError):
+                _LOGGER.warning("Skipping malformed binding record: %s", raw)
+        return out
+
+    async def async_erase_binding(
+        self, source_ieee: str, target_ieee: str, protocol: str
+    ) -> bool:
+        """
+        ELI5: remove one specific binding (matched by source IEEE +
+        target IEEE + protocol) from the persistent store. If the protocol
+        handler supports an undo, call it first so the device itself is
+        reset. Returns True if the record was removed, False if it was
+        not found.
+        """
+        key = (protocol.lower(), source_ieee.lower(), target_ieee.lower())
+        remaining = []
+        removed: BindingRecord | None = None
+        for raw in self._stored_data.get("bindings", []):
+            try:
+                binding = BindingRecord(**{
+                    k: v for k, v in raw.items()
+                    if k in BindingRecord.__dataclass_fields__
+                })
+            except (TypeError, ValueError):
+                remaining.append(raw)
+                continue
+            if (
+                binding.protocol.lower() == key[0]
+                and binding.source_ieee.lower() == key[1]
+                and binding.target_ieee.lower() == key[2]
+            ):
+                removed = binding
+                continue
+            remaining.append(raw)
+        if removed is None:
+            return False
+        # Attempt a protocol-specific undo (e.g. ZHA unbind, Matter
+        # AccessControl clear). If the protocol has no undo, we still
+        # remove the local record so the UI reflects the new state.
+        try:
+            await self._erase_binding(removed)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Protocol erase hook failed for %s", removed)
+        self._stored_data["bindings"] = remaining
+        await self._store.async_save(self._stored_data)
+        _LOGGER.info(
+            "SHiP Anchor: erased binding %s %s → %s",
+            removed.protocol, removed.source_ieee, removed.target_ieee,
+        )
+        return True
+
     async def async_erase_all(self) -> None:
         """Remove all offline bindings previously programmed."""
         bindings_raw = self._stored_data.get("bindings", [])
