@@ -93,13 +93,17 @@ def registries():
     """ELI5: a small home — two Zigbee switches, a Zigbee light, and a
     Z-Wave switch + lock. The Z-Wave devices exist so we can prove the
     wizard never offers them as a source for a Zigbee target."""
+    # ELI5: IEEE 802.15.4 addresses are exactly 16 hex digits (8 bytes).
+    # The old fixture used 18-digit strings that failed the IEEE regex in
+    # ``_device_ieee``; this breaks the ZHA handler's "source must have an
+    # IEEE" guard. All values below are now valid 16-digit addresses.
     devices = {
         "sw_a": _device("sw_a", "TS0505B", "Tuya",
-                        identifiers=(("zha", "001788fffe00aabbcc"),)),
+                        identifiers=(("zha", "001788fffe00aa11"),)),
         "sw_b": _device("sw_b", "TS0505B", "Tuya",
-                        identifiers=(("zha", "001788fffe00ddeeff"),)),
+                        identifiers=(("zha", "001788fffe00dd22"),)),
         "light1": _device("light1", "LCA001", "IKEA",
-                          identifiers=(("zha", "001798fffe00112233"),)),
+                          identifiers=(("zha", "001798fffe001133"),)),
         "zw_sw": _device("zw_sw", "ZW158 switch", "AEON",
                          identifiers=(("zwave_js", "3"),)),
         "zw_lock": _device("zw_lock", "UL395BE", "Yale",
@@ -178,7 +182,9 @@ def test_wizard_full_flow_creates_entry_with_rules(patched_registries) -> None:
         "rule1_color_temp_mireds": 350,
         "rule1_transition_seconds": 2,
     }))
-    # Step 4 → finish (dry-run).
+    # Step 4 → canopy: skip the intermediate module (direct one-hop binding).
+    _run(flow.async_step_canopy({"canopy": ""}))
+    # Step 5 → finish (dry-run).
     result = _run(flow.async_step_finish({"dry_run": True}))
 
     # ELI5: the entry is created and carries the rule sheet the user typed.
@@ -191,8 +197,102 @@ def test_wizard_full_flow_creates_entry_with_rules(patched_registries) -> None:
     assert rule["transition_seconds"] == 2
     assert data["targets"][0]["device_id"] == "light1"
     assert data["sources"][0]["device_id"] == "sw_a"
+    # ELI5: with no canopy chosen, the entry records a direct (None) chain.
+    assert data["canopy"] is None
     # The finish step always records a compile summary for the UI.
     assert "compile" in data
+
+
+# ---------------------------------------------------------------------------
+# 2b — the bidirectional entry step (v0.1.14)
+# ---------------------------------------------------------------------------
+def test_wizard_direction_step_requires_choice(patched_registries) -> None:
+    flow = config_flow.ShipAnchorConfigFlow()
+    flow.hass = _make_fake_hass()
+
+    # ELI5: the entry step shows a direction picker, and an unknown choice
+    # is rejected rather than silently defaulting.
+    form = _run(flow.async_step_user(None))
+    assert form["step_id"] == "user"
+    assert form["errors"] == {}
+
+    bad = _run(flow.async_step_user({"direction": "sideways"}))
+    assert bad["errors"].get("base") == "direction_required"
+
+
+def test_wizard_source_first_flow(patched_registries) -> None:
+    # ELI5: the user may start from the SWITCH. Step 1 picks a direction,
+    # step 2 lists sources (unfiltered, no anchor yet), step 3 filters the
+    # compatible targets, step 4 the behaviour, step 5 the (empty) canopy,
+    # step 6 the finish.
+    flow = config_flow.ShipAnchorConfigFlow()
+    flow.hass = _make_fake_hass()
+
+    # Direction → source-first.
+    form = _run(flow.async_step_user({"direction": "source"}))
+    assert form["step_id"] == "source"
+    # ELI5: with no protocol anchor yet, every source is listed.
+    values = _option_values(form, "sources")
+    assert "sw_a" in values
+
+    # Pick the source → wizard walks to the (filtered) target picker.
+    form = _run(flow.async_step_source({"sources": ["sw_a"]}))
+    assert form["step_id"] == "target"
+    # ELI5: the Z-Wave lock is filtered out because the source is Zigbee.
+    values = _option_values(form, "targets")
+    assert "light1" in values
+    assert "zw_lock" not in values
+
+    # Target → behaviour → canopy (empty) → finish.
+    _run(flow.async_step_target({"targets": ["light1"]}))
+    _run(flow.async_step_behavior({"rule1_gesture": "1x Tap", "rule1_brightness": 80}))
+    _run(flow.async_step_canopy({"canopy": ""}))
+    result = _run(flow.async_step_finish({"dry_run": True}))
+
+    assert result["created"] is True
+    data = result["data"]
+    assert data["sources"][0]["device_id"] == "sw_a"
+    assert data["targets"][0]["device_id"] == "light1"
+    assert data["canopy"] is None
+
+
+def _option_values(form: dict, key: str) -> set:
+    """ELI5: pull the dropdown values out of a wizard picker form by key."""
+    schema = form["data_schema"]._schema
+    sel = next(v for v in schema.values() if hasattr(v, "config"))
+    return {opt["value"] for opt in sel.config.options}
+
+
+# ---------------------------------------------------------------------------
+# 2c — the canopy (intermediate module) step produces a two-hop chain
+# ---------------------------------------------------------------------------
+def test_wizard_canopy_step_records_two_hop_chain(patched_registries) -> None:
+    # ELI5: when the user names an intermediate canopy, the finish step
+    # builds a source → canopy → target chain and compiles it with the
+    # multi-hop compiler (which yields one binding per hop).
+    flow = config_flow.ShipAnchorConfigFlow()
+    flow.hass = _make_fake_hass()
+
+    _run(flow.async_step_target({"targets": ["light1"]}))
+    _run(flow.async_step_source({"sources": ["sw_a"]}))
+    _run(flow.async_step_behavior({"rule1_gesture": "2x Tap", "rule1_brightness": 60}))
+
+    # ELI5: the canopy picker lists devices other than the source/target.
+    form = _run(flow.async_step_canopy(None))
+    assert form["step_id"] == "canopy"
+
+    # Choose sw_b (a second Zigbee switch) as the intermediate relay.
+    _run(flow.async_step_canopy({"canopy": "sw_b"}))
+
+    # Finish (dry-run) — the compile summary should show two hops.
+    result = _run(flow.async_step_finish({"dry_run": True}))
+    assert result["created"] is True
+    data = result["data"]
+    assert data["canopy"] is not None
+    assert data["canopy"]["device_id"] == "sw_b"
+    # ELI5: two hops → two bindings in the compile summary.
+    assert data["compile"]["bindings_added"] == 2
+    assert data["compile"]["success"] is True
 
 
 # ---------------------------------------------------------------------------

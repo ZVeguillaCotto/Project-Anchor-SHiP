@@ -96,6 +96,41 @@ about what is simulated versus measured on real hardware.
   `ship_list_bindings` (inventory), `ship_encode_19b_frame`,
   `ship_decode_verify_19b_frame`, and `ship_run_verification_suite`.
 
+### v0.1.14 — Bidirectional Wizard & Multi-Hop Canopy Routing
+
+- **Bidirectional wizard** (`custom_components/ship_anchor/config_flow.py`):
+  the flow now starts with a **direction** step (`async_step_user`) — the user
+  may anchor from **source-first** or **target-first**. Both ends funnel
+  through one direction-agnostic `async_step_anchor(side)`; the *other* end is
+  always protocol-filtered by `_device_protocols_match()`, so cross-bus
+  pairing is impossible in either direction. `async_step_source` /
+  `async_step_target` remain as back-compat aliases.
+- **Canopy / intermediate-module step** (`async_step_canopy`): an **optional**
+  relay or ceiling-canopy module inserted between source and target. Leaving
+  it empty keeps the plain one-hop binding (v0.1.13 behaviour). The entry's
+  `data["canopy"]` is `None` for a direct binding, or a device dict for a
+  chain.
+- **Multi-hop chain compiler** (`AnchorCompiler.async_compile_multihop(chain,
+  rules, dry_run, group_name)` in `compiler.py`): compiles a `chain` of wizard
+  device entries **sequentially** — hop *i* = `chain[i] → chain[i+1]` — through
+  the same per-protocol handlers as a one-hop binding. `_hop_protocol()`
+  infers each leg's protocol from its *source* device; `_hop_source_config()`
+  maps a wizard entry to the handler's config keys. LEAT rows are compiled
+  **once** and attached to every hop. Each hop is tagged with `hop_index`. A
+  broken hop aborts the chain with an honest, hop-numbered error.
+  - **Chain-Like (implemented):** the shipping path — physical power-gating
+    ceiling canopies (`switch → canopy → load`).
+  - **Broadcast-Like (Multicast Group Mesh):** architectural **roadmap only**,
+    not shipped — one multicast to a shared group, de-duplicated by the
+    `NoStatusShare` lock. Documented in GUIDE_FOR_HUMANS.md Part 14.
+- **Handler compatibility:** the Shelly handler accepts a `next_hop_ip`
+  fallback and the Tasmota handler accepts a single `target_ip` so a one-hop
+  handler can also drive a chain leg without new protocol code.
+- **Tests:** `tests/test_multihop_unit.py` (Layer 1) covers `_hop_protocol`,
+  `_hop_source_config`, and `async_compile_multihop`; `tests/test_integration.py`
+  (Layer 2) covers the bidirectional wizard, the source-first flow, and the
+  two-hop canopy chain.
+
 ### Repository map
 
 | Path | Purpose |
@@ -106,10 +141,10 @@ about what is simulated versus measured on real hardware.
 | `src/ship_core/ship_protocol.h` | Frame layout, enums, protocol and HAL APIs |
 | `src/ship_core/ship_protocol.c` | SipHash, frame encode/decode, LEAT, Mesh-RTC |
 | `src/ship_core/ship_radio_hal.c` | ESP-IDF, Nordic, OpenThread, native radio paths |
-| `custom_components/ship_anchor/compiler.py` | Automation parser, multi-protocol binding compiler, and LEAT rule compiler |
+| `custom_components/ship_anchor/compiler.py` | Automation parser, multi-protocol binding compiler, LEAT rule compiler, and multi-hop chain compiler |
 | `custom_components/ship_anchor/quirks_inspector.py` | Zigbee endpoint, preflight, and group inspection |
 | `custom_components/ship_anchor/__init__.py` | Home Assistant integration setup and services |
-| `custom_components/ship_anchor/config_flow.py` | Target-first wizard (target → source → behavior → finish) and options flow |
+| `custom_components/ship_anchor/config_flow.py` | Bidirectional wizard (direction → anchor → other-end → behavior → canopy → finish) and options flow |
 | `custom_components/ship_anchor/automation.py` | HA automation normalization + entity-registry protocol fallback |
 | `custom_components/ship_anchor/manifest.json` | Home Assistant integration metadata |
 | `mcp/ship_anchor_mcp.py` | Seven-tool MCP stdio server (inspect, compile, bake LEAT, list bindings, encode/decode, verify), CLI, and demo |
@@ -125,6 +160,7 @@ about what is simulated versus measured on real hardware.
 | `tests/test_compiler_unit.py` | **Layer 1** — pure-logic tests for the LEAT builder and rule domain/action mapping |
 | `tests/test_config_flow_unit.py` | **Layer 1** — protocol-match, target-kind, capability, and protocol-inference unit tests |
 | `tests/test_integration.py` | **Layer 2** — wizard steps, `.storage/ship_anchor.bindings` round-trip, and resilient `erase_all` |
+| `tests/test_multihop_unit.py` | **Layer 1** — `_hop_protocol`, `_hop_source_config`, and `async_compile_multihop` chain tests |
 
 ### Testing Pyramid
 

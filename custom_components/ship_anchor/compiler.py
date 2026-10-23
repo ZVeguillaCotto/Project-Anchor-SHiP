@@ -123,6 +123,152 @@ class AnchorCompiler:
         return result
 
     # ------------------------------------------------------------------
+    # Multi-hop chain compilation  (v0.1.14)
+    # ELI5: a physical chain like "switch → ceiling canopy → fan" needs the
+    # gesture + action to travel through an intermediate module before it
+    # reaches the load. We build the payload chain hop-by-hop, in order, so
+    # the LEAT rows and the binding payloads line up with the real wiring.
+    # ------------------------------------------------------------------
+    def _hop_protocol(self, device: dict) -> Protocol:
+        """ELI5: a hop's protocol is the one its *source* device speaks —
+        a Z-Wave switch drives the first hop; a Zigbee canopy drives the
+        second. Unknown protocols are tolerated: the per-hop compile just
+        reports an error and the remaining hops still produce a preview."""
+        for identifier in (device.get("identifiers") or []):
+            if not isinstance(identifier, (tuple, list)) or not identifier:
+                continue
+            namespace = str(identifier[0]).upper()
+            if namespace in PROTOCOL_ALIASES:
+                return PROTOCOL_ALIASES[namespace]
+        return Protocol.UNKNOWN
+
+    def _hop_source_config(self, device: dict) -> dict:
+        """ELI5: map a wizard device entry to the config keys each protocol
+        handler expects. For bus protocols (ZHA/Z2M/Matter/Z-Wave) the IEEE
+        / node id is what matters; for IP protocols (Shelly/Tasmota) the IP
+        address or a device name is the fallback."""
+        ieee = str(device.get("ieee") or "")
+        model = str(device.get("model") or "")
+        manufacturer = str(device.get("manufacturer") or "")
+        identifier_value = ""
+        identifiers = device.get("identifiers") or []
+        if identifiers:
+            first = identifiers[0]
+            if isinstance(first, (tuple, list)) and len(first) > 1:
+                identifier_value = str(first[1])
+        return {
+            "source_ieee": ieee,
+            "source_model": model,
+            "source_manufacturer": manufacturer,
+            "shelly_ip": identifier_value,
+            "controller_ip": identifier_value,
+            "group_name": str(device.get("device_id") or "anchor_grp_1"),
+        }
+
+    async def async_compile_multihop(
+        self,
+        chain: list[dict],
+        rules: list[dict] | None = None,
+        dry_run: bool = True,
+        group_name: str = "",
+    ) -> CompileResult:
+        """
+        ELI5: compile a "chain" of devices — e.g. a switch, an optional
+        intermediate canopy module, and a target load — into a single set of
+        payloads, one per hop, that can be replayed in order.
+
+        `chain` is a list of wizard device entries (as produced by the
+        wizard), in the order the gesture should travel through them.
+        `rules` are LEAT rule sheets; they are compiled once and attached
+        to every hop so the LEAT rows are identical at each stage of the
+        chain.
+        """
+        result = CompileResult()
+        if not chain:
+            result.success = False
+            result.errors.append(
+                "ELI5: no hops to compile — pass at least one device in the chain."
+            )
+            return result
+
+        # LEAT rows are compiled once up front so every hop carries the
+        # same cheat-sheet — the device that actually runs the gesture
+        # (usually the first hop) can share it with the rest of the chain
+        # at frame-encode time.
+        compiled_leat: list[dict] = []
+        if rules:
+            compiled_leat = self.build_leat_table(rules)
+            if compiled_leat:
+                result.warnings.append(
+                    "LEAT: compiled {} rule(s) into {} device row(s) "
+                    "(attached to every hop)".format(
+                        len(rules), len(compiled_leat)
+                    )
+                )
+                for row in compiled_leat:
+                    result.dry_run_payloads.append({"step": "leat_write", "row": row})
+
+        hop_count = max(1, len(chain) - 1)
+        for index in range(len(chain) - 1):
+            source = chain[index]
+            target = chain[index + 1]
+            hop_config: dict[str, Any] = dict(self._hop_source_config(source))
+            hop_config["targets"] = [dict(target)]
+            # ELI5: IP-protocol legs address the *next* hop by its own
+            # identifier value (the device's IP, or IEEE as a fallback).
+            next_value = ""
+            identifiers = target.get("identifiers") or []
+            if identifiers and isinstance(identifiers[0], (tuple, list)) and len(identifiers[0]) > 1:
+                next_value = str(identifiers[0][1])
+            if next_value:
+                hop_config.setdefault("target_ip", next_value)
+                hop_config.setdefault("target_ips", [next_value])
+                hop_config.setdefault("next_hop_ip", next_value)
+            if group_name:
+                hop_config["group_name"] = group_name
+            hop_protocol = self._hop_protocol(source)
+            hop_config["protocol"] = hop_protocol.name
+            # ELI5: run this hop through the same single-hop compile the
+            # wizard already uses — the per-protocol handler builds the
+            # exact payloads (ZHA service calls, Shelly HTTP, Tasmota
+            # Backlog, Matter WS, Z-Wave association, …).
+            try:
+                parsed = parse_ha_automation_dict(
+                    hop_config, self._get_device_registry(),
+                    self._get_entity_registry(),
+                )
+            except Exception as exc:  # noqa: BLE001
+                result.success = False
+                result.errors.append("Hop {} → {}: {}".format(index + 1, index + 2, exc))
+                continue
+            parsed["protocol"] = hop_protocol.name
+            await self._compile_automation(parsed, result, dry_run)
+            # Tag each payload with its hop index so the UI can group the
+            # dry-run output into "Hop 1", "Hop 2", … sections.
+            for payload in result.dry_run_payloads:
+                if isinstance(payload, dict) and "hop_index" not in payload:
+                    payload["hop_index"] = index + 1
+            if not result.success:
+                # ELI5: the whole chain only works when every hop compiles.
+                # Stop early and report which hop broke so the user can
+                # fix it and retry without recompiling the others.
+                result.errors.append(
+                    "ELI5: multi-hop chain aborted at hop {} → {}. "
+                    "Fix that hop's protocol or devices, then retry.".format(
+                        index + 1, index + 2,
+                    )
+                )
+                return result
+
+        # ELI5: summary line so the wizard can show "2 hops, 3 rules".
+        result.warnings.append(
+            "Multi-hop chain compiled: {} hop(s) across {} device(s).".format(
+                hop_count, len(chain)
+            )
+        )
+        return result
+
+    # ------------------------------------------------------------------
     # LEAT (Local Event-Action Table) compilation
     # ELI5: the wizard can collect "rule sheets" — a gesture (tap count /
     # hold), an optional time-of-day window, and action parameters

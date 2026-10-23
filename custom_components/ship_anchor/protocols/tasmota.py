@@ -59,9 +59,15 @@ class TasmotaHandler(ProtocolHandler):
         controller_ip = _validate_ipv4(
             str(cfg.get("controller_ip", "192.168.1.50")), "controller_ip"
         )
+        # ELI5: a chain leg may address its target as a single `target_ip`
+        # rather than a `target_ips` list; normalise either into the list so
+        # one handler can drive both a one-hop group and a multi-hop leg.
+        raw_target_ips = cfg.get("target_ips")
+        if raw_target_ips is None and cfg.get("target_ip"):
+            raw_target_ips = [cfg.get("target_ip")]
         target_ips = [
             _validate_ipv4(str(ip), "target_ips[{}]".format(i))
-            for i, ip in enumerate(cfg.get("target_ips", ["192.168.1.51"]))
+            for i, ip in enumerate(raw_target_ips or ["192.168.1.51"])
         ]
         controller_backlog = (
             "SetOption85 1; SetOption88 1; "

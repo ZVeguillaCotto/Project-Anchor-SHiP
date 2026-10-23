@@ -48,7 +48,14 @@ class ShellyHandler(ProtocolHandler):
         self, compiler: Any, cfg: dict, result: CompileResult, dry_run: bool
     ) -> None:
         shelly_ip = _validate_ipv4(str(cfg.get("shelly_ip", "192.168.1.100")), "shelly_ip")
-        target_ip = _validate_ipv4(str(cfg.get("target_ip", "192.168.1.200")), "target_ip")
+        # ELI5: the target may be expressed as `target_ip` (direct) or, in a
+        # multi-hop chain, as the next device's IEEE / identifier value. We
+        # accept either so the same handler can drive a one-hop relay or the
+        # second leg of a "switch → canopy → load" chain.
+        target_ip = _validate_ipv4(
+            str(cfg.get("target_ip") or cfg.get("next_hop_ip") or "192.168.1.200"),
+            "target_ip",
+        )
         target_command = str(cfg.get("target_command", "on"))
         if not _SAFE_COMMAND.match(target_command):
             raise ValueError(

@@ -30,6 +30,8 @@ Think of it like programming your TV remote to also work with the neighbours' TV
 
 **Supported protocols:**
 - **Multi-way switch offline sync** — N switches + shared bulbs stay in exact sync via one SHiP Group ID broadcast channel, with the `NoStatusShare` gesture (`0x8`) suppressing status echo loops — no hub, router, or cloud in the path
+- **Bidirectional wizard** — start from either the source switch or the target load; the other end is protocol-filtered so cross-bus pairings are impossible (v0.1.14)
+- **Multi-hop canopy routing** — chain-like `switch → canopy/relay → load` bindings for physical power-gating ceiling canopies (v0.1.14); a broadcast-like multicast group mesh is the roadmap step
 - **Zigbee** (ZHA & Zigbee2MQTT) — direct device-to-device binding with auto-discovery of vendor quirks (Inovelli, Aqara, Tuya, Philips Hue, SONOFF)
 - **Matter 1.3–1.6** — two-step ACL + Binding table writes via `matterjs-server` WebSocket API
 - **Z-Wave 700/800** — Association Group programming via `zwave_js` (with ZWLR guard)
@@ -38,6 +40,27 @@ Think of it like programming your TV remote to also work with the neighbours' TV
 
 ### ⚡ Tier 2 — The 19-Byte Fast-Path (for open/customisable hardware)
 For **ESP32-C6, ESP32-H2, nRF52840, and nRF5340** devices, SHiP injects a tiny 19-byte "radio whisper" at the exact hardware radio layer — below Wi-Fi, below IPv6, below everything. Devices talk **directly to each other** in under 3 milliseconds even if every router and server in your home is completely unplugged.
+
+### 🔗 Multi-Hop Canopy Routing (Chain-Like vs. Broadcast-Like)
+Many real-world loads sit behind an intermediate module — the classic example is a ceiling-fan canopy that powers a light kit. SHiP Anchor programs that **chain** hop-by-hop:
+
+```
+  Switch  ── Hop 1 ──►  Ceiling Canopy  ── Hop 2 ──►  Bulb / Fan
+```
+
+Each hop is a normal one-hop binding to the next device, compiled in order by
+`AnchorCompiler.async_compile_multihop()` so the gesture + LEAT rule travels
+through the canopy and out to the load. This **Chain-Like** path is the
+shipping implementation and is ideal for physical power-gating canopies.
+
+**Broadcast-Like (Multicast Group Mesh)** is the architectural roadmap: instead
+of N sequential hops, one multicast frame goes to a shared group and every member
+applies it locally (with the `NoStatusShare` lock to suppress echo). That is more
+efficient for large, flat clusters with no relaying middle device, and is
+complementary to — not a replacement for — the chain-like path. See
+[GUIDE_FOR_HUMANS.md](GUIDE_FOR_HUMANS.md) Part 14 for the full explanation.
+
+---
 
 ---
 
@@ -184,7 +207,7 @@ project-anchor-ship/
 │   └── ship_anchor/
 │       ├── manifest.json                         ← HA integration manifest
 │       ├── __init__.py                           ← Persistent Store + service registration
-│       ├── config_flow.py                        ← Target-first wizard + options flow
+│       ├── config_flow.py                        ← Bidirectional wizard + canopy step + options flow
 │       ├── automation.py                         ← HA automation normalization
 │       ├── quirks_inspector.py                   ← Live zigpy + static quirks DB
 │       ├── strings.json                          ← Localised wizard strings (ELI5)

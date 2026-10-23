@@ -207,180 +207,210 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     # ------------------------------------------------------------------
-    # Step 1 — pick the TARGET device(s)  (target-first workflow)
-    # ELI5: we start with what the user WANTS TO CONTROL (the light, valve,
-    # lock, fan), not with the switch. That way SHiP Anchor can immediately
-    # detect the protocol (Zigbee, Matter, Z-Wave, Shelly, Tasmota) and
-    # later only offer switches that speak the same protocol.
+    # Step 1 — choose a DIRECTION  (v0.1.14: bidirectional wizard)
+    # ELI5: the wizard now lets the user start from EITHER end of the chain.
+    #   • "target" — I already know what I want to control (the light /
+    #     fan / valve / lock).
+    #   • "source" — I already know which switch I want to use.
+    # Whichever way the user starts, the wizard then offers the OTHER end
+    # filtered by protocol, so a Zigbee switch can never be paired with a
+    # Z-Wave lock.
     # ------------------------------------------------------------------
     async def async_step_user(self, user_input: dict | None = None):
-        """ELI5: entry point — jump straight to the target picker."""
-        return await self.async_step_target(user_input)
+        """ELI5: the entry step — ask the user which end to start from."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            direction = str(user_input.get("direction", "") or "").strip()
+            if direction not in ("source", "target"):
+                errors["base"] = "direction_required"
+                user_input = None
+        if user_input is None:
+            return self.async_show_form(
+                step_id="user",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required("direction"): SelectSelector(
+                            SelectSelectorConfig(
+                                options=[
+                                    {"value": "target", "label": "I want to control a device (target-first)"},
+                                    {"value": "source", "label": "I have a switch / button (source-first)"},
+                                ],
+                                mode=SelectSelectorMode.DROPDOWN,
+                            )
+                        )
+                    }
+                ),
+                errors=errors,
+            )
+        self._input = {"direction": direction}  # type: ignore[attr-defined]
+        if direction == "source":
+            return await self.async_step_anchor("source")
+        return await self.async_step_anchor("target")
 
-    async def async_step_target(self, user_input: dict | None = None):
+    # ------------------------------------------------------------------
+    # Step 2 — anchor the FIRST device (bidirectional)
+    # ELI5: whether the user chose "source-first" or "target-first", this
+    # step collects the device(s) on that end and records the protocol they
+    # speak. The next step (the OTHER end) is filtered by that protocol, so
+    # a cross-bus pairing can never slip through.
+    # ------------------------------------------------------------------
+    async def async_step_anchor(self, side: str, user_input: dict | None = None):
         """
-        ELI5: let the user choose one or more lights / valves / locks /
-        fans that the switch(es) should control. SHiP Anchor detects each
-        target's protocol and kind, and automatically escalates to a group
-        binding if more than two targets are chosen (anti-popcorn rule).
+        ELI5: collect the anchor-side device(s). ``side`` is either
+        "source" (switches / buttons) or "target" (lights / valves / …).
+        The step is direction-agnostic so the wizard can drive it from
+        EITHER end of the chain.
         """
         errors: dict[str, str] = {}
+        key = "sources" if side == "source" else "targets"
+        label = "Source device(s)" if side == "source" else "Target device(s)"
+        if self._input is None:
+            self._input = {}  # type: ignore[attr-defined]
 
         if user_input is not None:
-            raw_targets = user_input.get("targets", []) or []
-            if isinstance(raw_targets, str):
-                raw_targets = [raw_targets]
-            target_ids = [str(item) for item in raw_targets if item]
+            raw_ids = user_input.get(key, []) or []
+            if isinstance(raw_ids, str):
+                raw_ids = [raw_ids]
+            device_ids = [str(item) for item in raw_ids if item]
             use_group = bool(user_input.get("use_group", False))
             group_name = str(user_input.get("group_name", "") or "").strip()
 
-            if not target_ids and not (use_group and group_name):
-                errors["base"] = "target_required"
-                targets = self._candidate_targets(
-                    dr.async_get(self.hass), er.async_get(self.hass)
-                )
-                return self.async_show_form(
-                    step_id="target",
-                    data_schema=self._target_schema(targets),
-                    errors=errors,
-                )
-
             device_reg = dr.async_get(self.hass)
             entity_reg = er.async_get(self.hass)
-            targets = []
-            for tid in target_ids:
-                dev = device_reg.async_get(tid)
+            anchor_entries = []
+            for device_id in device_ids:
+                dev = device_reg.async_get(device_id)
                 if dev is None:
                     continue
-                targets.append({
-                    "device_id": tid,
+                entry: dict[str, Any] = {
+                    "device_id": device_id,
                     "name": _device_name(dev),
                     "ieee": _device_ieee(dev),
                     "model": _device_model(dev),
                     "manufacturer": _device_manufacturer(dev),
-                    "kind": _target_kind(dev, entity_reg),
-                    "protocol": _infer_protocol(dev).name,
-                })
-            if not targets:
-                errors["base"] = "target_required"
-            # ELI5: the protocol of the FIRST target anchors the wizard —
-            # every later source we offer must speak the same protocol.
-            protocol = _infer_protocol(
-                device_reg.async_get(target_ids[0])
-            ) if target_ids else Protocol.UNKNOWN
-            self._input = {  # type: ignore[attr-defined]
-                "targets": targets,
-                "use_group": use_group,
-                "group_name": group_name,
-                "protocol": protocol.name,
-            }
-            if errors:
-                return self.async_show_form(
-                    step_id="target",
-                    data_schema=self._target_schema(
-                        self._candidate_targets(device_reg, entity_reg)
-                    ),
-                    errors=errors,
-                )
-            return await self.async_step_source()
+                    "identifiers": [
+                        [str(namespace), str(value)]
+                        for namespace, value in (dev.identifiers or ())
+                    ],
+                }
+                if side == "target":
+                    entry["kind"] = _target_kind(dev, entity_reg)
+                    entry["protocol"] = _infer_protocol(dev).name
+                anchor_entries.append(entry)
 
+            if not anchor_entries:
+                errors["base"] = "source_required" if side == "source" else "target_required"
+            else:
+                # ELI5: the protocol of the FIRST anchor device becomes the
+                # wizard's anchor protocol — every later device (the other
+                # end, plus any canopy module) is filtered against it.
+                protocol = _infer_protocol(
+                    device_reg.async_get(device_ids[0])
+                ) if device_ids else Protocol.UNKNOWN
+                self._input.update(  # type: ignore[union-attr]
+                    **{key: anchor_entries},
+                    use_group=use_group,
+                    group_name=group_name,
+                    protocol=protocol.name,
+                )
+
+            if errors:
+                candidates = self._candidates_for_side(
+                    side, device_reg, entity_reg, protocol
+                )
+                return self.async_show_form(
+                    step_id=side,
+                    data_schema=self._anchor_schema(key, label, candidates),
+                    errors=errors,
+                    description_placeholders={
+                        "protocol": protocol.name,
+                        "side": label,
+                        "count": str(len(candidates)),
+                    },
+                )
+
+            # ELI5: now that both ends of the chain are known, go to the
+            # behaviour step. If only one end is collected yet, walk to the
+            # OTHER end (filtered by protocol) — source → target OR
+            # target → source.
+            have_sources = bool(self._input.get("sources"))  # type: ignore[union-attr]
+            have_targets = bool(self._input.get("targets"))  # type: ignore[union-attr]
+            if have_sources and have_targets:
+                return await self.async_step_behavior()
+            other_side = "target" if side == "source" else "source"
+            return await self.async_step_anchor(other_side)
+
+        # Show the picker for this side, filtered by the anchor protocol.
         device_reg = dr.async_get(self.hass)
         entity_reg = er.async_get(self.hass)
-        targets = self._candidate_targets(device_reg, entity_reg)
+        anchor_protocol = PROTOCOL_ALIASES.get(
+            str(self._input.get("protocol", "")), Protocol.UNKNOWN
+        )
+        candidates = self._candidates_for_side(
+            side, device_reg, entity_reg, anchor_protocol
+        )
         return self.async_show_form(
-            step_id="target",
-            data_schema=self._target_schema(targets),
+            step_id=side,
+            data_schema=self._anchor_schema(key, label, candidates),
+            description_placeholders={
+                "protocol": anchor_protocol.name,
+                "side": label,
+                "count": str(len(candidates)),
+            },
         )
 
-    def _target_schema(self, candidates: list) -> vol.Schema:
-        """ELI5: build the target-picker form (multi-select + group toggle)."""
+    def _anchor_schema(self, key: str, label: str, candidates: list) -> vol.Schema:
+        """ELI5: build the anchor picker form (multi-select + group toggle)."""
         options = [{"value": dev_id, "label": name} for dev_id, name in candidates]
         return vol.Schema(
             {
-                vol.Required("targets"): SelectSelector(
-                    SelectSelectorConfig(options=options, mode=SelectSelectorMode.MULTIPLE)
+                vol.Required(key): SelectSelector(
+                    SelectSelectorConfig(
+                        options=options, mode=SelectSelectorMode.MULTIPLE
+                    )
                 ),
                 vol.Optional("use_group", default=False): bool,
                 vol.Optional("group_name", default=""): str,
             }
         )
 
-    # ------------------------------------------------------------------
-    # Step 2 — pick the SOURCE switch(es)  (protocol-filtered)
-    # ELI5: only switches that speak the SAME protocol as the target(s)
-    # are listed, so a Zigbee switch can never be paired with a Z-Wave
-    # lock. Multi-select supports multi-way (3-way) switch setups.
-    # ------------------------------------------------------------------
-    async def async_step_source(self, user_input: dict | None = None):
-        """ELI5: offer compatible source switches (same protocol only)."""
-        errors: dict[str, str] = {}
-        inp = self._input  # type: ignore[attr-defined]
-        target_protocol = PROTOCOL_ALIASES.get(
-            str(inp.get("protocol", "")), Protocol.UNKNOWN
-        )
-
-        if user_input is not None:
-            raw_sources = user_input.get("sources", []) or []
-            if isinstance(raw_sources, str):
-                raw_sources = [raw_sources]
-            source_ids = [str(item) for item in raw_sources if item]
-            if not source_ids:
-                errors["base"] = "source_required"
-            else:
-                device_reg = dr.async_get(self.hass)
-                sources = []
-                for sid in source_ids:
-                    dev = device_reg.async_get(sid)
-                    if dev is None:
-                        continue
-                    sources.append({
-                        "device_id": sid,
-                        "name": _device_name(dev),
-                        "ieee": _device_ieee(dev),
-                        "model": _device_model(dev),
-                        "manufacturer": _device_manufacturer(dev),
-                    })
-                if not sources:
-                    errors["base"] = "source_required"
-                else:
-                    inp.update(sources=sources)
-                    return await self.async_step_behavior()
-
-        device_reg = dr.async_get(self.hass)
-        entity_reg = er.async_get(self.hass)
-        # ELI5: the dynamic filter — drop every source whose protocol does
-        # not match the target's protocol. This is the guard that prevents
-        # cross-protocol mismatches (Zigbee → Z-Wave, Matter → Shelly, …).
-        all_sources = self._candidate_sources(device_reg, entity_reg)
+    def _candidates_for_side(
+        self,
+        side: str,
+        device_reg: Any,
+        entity_reg: Any,
+        anchor_protocol: Protocol,
+    ) -> list:
+        """
+        ELI5: return the picker's device list for one side of the wizard,
+        filtered by the anchor protocol so a cross-bus pairing can never be
+        offered. When no compatible device exists we fall back to the full
+        list and let the description placeholder explain why.
+        """
+        if side == "source":
+            all_candidates = self._candidate_sources(device_reg, entity_reg)
+        else:
+            all_candidates = self._candidate_targets(device_reg, entity_reg)
+        if anchor_protocol == Protocol.UNKNOWN:
+            return all_candidates
         compatible = []
-        for dev_id, name in all_sources:
+        for dev_id, name in all_candidates:
             dev = device_reg.async_get(dev_id)
             if dev is None:
                 continue
-            if _device_protocols_match(_infer_protocol(dev), target_protocol):
+            if _device_protocols_match(_infer_protocol(dev), anchor_protocol):
                 compatible.append((dev_id, name))
-        if not compatible:
-            # ELI5: honest fallback — tell the user WHY nothing was listed
-            # instead of showing an empty dropdown.
-            compatible = all_sources
-        return self.async_show_form(
-            step_id="source",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("sources"): SelectSelector(
-                        SelectSelectorConfig(
-                            options=[{"value": d, "label": n} for d, n in compatible],
-                            mode=SelectSelectorMode.MULTIPLE,
-                        )
-                    )
-                }
-            ),
-            errors=errors,
-            description_placeholders={
-                "protocol": inp.get("protocol", "unknown"),
-                "source_count": str(len(compatible)),
-            },
-        )
+        return compatible if compatible else all_candidates
+
+    # Back-compat aliases — the wizard used to have separate "target" and
+    # "source" steps; those now both funnel through ``async_step_anchor``.
+    # Keeping the names around so any external code (tests, MCP bridges)
+    # that calls ``flow.async_step_target(...)`` keeps working unchanged.
+    async def async_step_target(self, user_input: dict | None = None):
+        return await self.async_step_anchor("target", user_input)
+
+    async def async_step_source(self, user_input: dict | None = None):
+        return await self.async_step_anchor("source", user_input)
 
     # ------------------------------------------------------------------
     # Step 3 — behaviour: gestures + time windows + per-kind parameters
@@ -458,7 +488,10 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "rule_required"
             else:
                 inp["rules"] = rules
-                return await self.async_step_finish()
+                # ELI5: after the rule sheet, ask (optionally) about an
+                # intermediate canopy / relay module before the final
+                # preview step.
+                return await self.async_step_canopy()
 
         # Build the schema dynamically from the target kind's capabilities.
         schema: dict = {}
@@ -511,7 +544,100 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     # ------------------------------------------------------------------
-    # Step 4 — validate, compile, create the config entry
+    # Step 4 — optional INTERMEDIATE CANOPY / RELAY  (v0.1.14)
+    # ELI5: some rooms route a switch's signal through an intermediate
+    # "canopy" module (a ceiling-fan canopy, a relay box, a mesh repeater)
+    # before the action reaches the actual load (bulb, fan, valve). If the
+    # user has one, they pick it here and the compiler will build a
+    # two-hop chain:  source → canopy → target.
+    #
+    # This step is OPTIONAL. Leaving the picker empty skips the canopy and
+    # the binding stays a plain one-hop source → target (exactly the
+    # v0.1.13 behaviour).
+    # ------------------------------------------------------------------
+    async def async_step_canopy(self, user_input: dict | None = None):
+        """ELI5: offer an optional intermediate relay / canopy module."""
+        errors: dict[str, str] = {}
+        inp = self._input  # type: ignore[attr-defined]
+        anchor_protocol = PROTOCOL_ALIASES.get(
+            str(inp.get("protocol", "")), Protocol.UNKNOWN
+        )
+        device_reg = dr.async_get(self.hass)
+        entity_reg = er.async_get(self.hass)
+
+        # ELI5: a canopy is any device that is NOT the source and NOT the
+        # target — typically a relay, repeater, or a second switch on the
+        # same bus. We list every protocol-compatible device and let the
+        # user pick one (or none).
+        all_candidates = self._candidates_for_side(
+            "source", device_reg, entity_reg, anchor_protocol
+        )
+        used_ids = {str(s.get("device_id")) for s in inp.get("sources", []) or []}
+        used_ids |= {str(t.get("device_id")) for t in inp.get("targets", []) or []}
+        candidates = [
+            (dev_id, name)
+            for dev_id, name in all_candidates
+            if dev_id not in used_ids
+        ]
+
+        if user_input is not None:
+            raw_canopy = user_input.get("canopy", "") or ""
+            if isinstance(raw_canopy, (list, tuple)):
+                raw_canopy = raw_canopy[0] if raw_canopy else ""
+            canopy_id = str(raw_canopy or "").strip()
+            if not canopy_id or canopy_id == "none":
+                inp["canopy"] = None
+            else:
+                dev = device_reg.async_get(canopy_id)
+                if dev is None:
+                    errors["base"] = "canopy_not_found"
+                else:
+                    inp["canopy"] = {
+                        "device_id": canopy_id,
+                        "name": _device_name(dev),
+                        "ieee": _device_ieee(dev),
+                        "model": _device_model(dev),
+                        "manufacturer": _device_manufacturer(dev),
+                        "identifiers": [
+                            [str(namespace), str(value)]
+                            for namespace, value in (dev.identifiers or ())
+                        ],
+                    }
+            if errors:
+                return self.async_show_form(
+                    step_id="canopy",
+                    data_schema=self._canopy_schema(candidates),
+                    errors=errors,
+                )
+            return await self.async_step_finish()
+
+        return self.async_show_form(
+            step_id="canopy",
+            data_schema=self._canopy_schema(candidates),
+            description_placeholders={
+                "protocol": anchor_protocol.name,
+                "canopy_count": str(len(candidates)),
+            },
+        )
+
+    def _canopy_schema(self, candidates: list) -> vol.Schema:
+        """ELI5: the canopy picker — a single-select dropdown with an
+        explicit "(no intermediate module)" entry at the top."""
+        options = [
+            {"value": "", "label": "(no intermediate module — direct binding)"}
+        ] + [
+            {"value": dev_id, "label": name} for dev_id, name in candidates
+        ]
+        return vol.Schema(
+            {
+                vol.Required("canopy", default=""): SelectSelector(
+                    SelectSelectorConfig(options=options, mode=SelectSelectorMode.DROPDOWN)
+                ),
+            }
+        )
+
+    # ------------------------------------------------------------------
+    # Step 5 — validate, compile, create the config entry
     # ------------------------------------------------------------------
     async def async_step_finish(self, user_input: dict | None = None):
         """
@@ -553,6 +679,17 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if inp.get("use_group") and inp.get("group_name"):
                 config["group_name"] = inp["group_name"]
 
+            # ELI5 (v0.1.14): if the user picked an intermediate canopy /
+            # relay, build a two-hop chain (source → canopy → target) and
+            # compile it with the multi-hop compiler. When there is no
+            # canopy, fall back to the plain one-hop compile (v0.1.13).
+            canopy = inp.get("canopy") or None
+            chain: list[dict] | None = None
+            if canopy and primary:
+                chain = [dict(primary), dict(canopy)]
+                for t in resolved_targets:
+                    chain.append(dict(t))
+
             compile_summary: dict[str, Any] = {
                 "success": False,
                 "dry_run": dry_run,
@@ -565,7 +702,15 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             compiler = self._get_or_build_compiler()
             if compiler is not None:
                 try:
-                    result = await compiler.async_compile_config(config, dry_run=dry_run)
+                    if chain:
+                        result = await compiler.async_compile_multihop(
+                            chain=chain,
+                            rules=list(inp.get("rules", [])),
+                            dry_run=dry_run,
+                            group_name=str(inp.get("group_name", "") or ""),
+                        )
+                    else:
+                        result = await compiler.async_compile_config(config, dry_run=dry_run)
                     compile_summary = {
                         "success": result.success,
                         "dry_run": dry_run,
@@ -592,9 +737,17 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     "Compiler unavailable — integration not set up yet."
                 )
 
-            title = "{} → {} target(s)".format(
-                primary.get("name", "source"), len(targets) or 1
-            )
+            canopy = inp.get("canopy") or None
+            if canopy:
+                title = "{} → {} → {} target(s)".format(
+                    primary.get("name", "source"),
+                    canopy.get("name", "canopy"),
+                    len(targets) or 1,
+                )
+            else:
+                title = "{} → {} target(s)".format(
+                    primary.get("name", "source"), len(targets) or 1
+                )
             data: dict[str, Any] = {
                 "source_device_id": primary.get("device_id", ""),
                 "source_name": primary.get("name", ""),
@@ -602,6 +755,7 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "protocol": protocol_name,
                 "targets": targets,
                 "sources": sources,             # multi-way peer list
+                "canopy": canopy,              # v0.1.14 — intermediate relay (or None)
                 "use_group": bool(inp.get("use_group", False)),
                 "group_name": inp.get("group_name", ""),
                 "rules": list(inp.get("rules", [])),  # LEAT rows

@@ -19,9 +19,10 @@ linked C and Python commands after making changes.
 SHiP Anchor is verified bottom-up. All three layers run on a plain computer
 (no HA box, no radios) — the top two just get slower and more realistic:
 
-1. **Unit** (`tests/test_compiler_unit.py`, `tests/test_config_flow_unit.py`)
+1. **Unit** (`tests/test_compiler_unit.py`, `tests/test_config_flow_unit.py`, `tests/test_multihop_unit.py`)
    — pure logic: protocol matching, target kind, capabilities, LEAT row
-   mapping. Run: `python3 -m pytest tests/ -v` (needs `pip install pytest`).
+   mapping, and the multi-hop chain compiler.
+   Run: `python3 -m pytest tests/ -v` (needs `pip install pytest`).
 2. **Integration** (`tests/test_integration.py`) — wizard steps, the
    `.storage/ship_anchor.bindings` round-trip, and resilient `erase_all`.
    Home Assistant is stubbed by `tests/conftest.py`.
@@ -50,3 +51,25 @@ A mismatch is a release blocker.
   `ship_bake_behavior` (LEAT), `ship_list_bindings`, encode, decode, and the
   verification suite. Any new tool must keep the schema under the lexical
   token ceiling asserted by Drill 6 (see `sim/run_anchor_benchmarks.py`).
+
+## v0.1.14 — Bidirectional Wizard & Multi-Hop Canopy (read before the wizard or compiler)
+
+- **Wizard is now bidirectional:** `async_step_user` asks direction first
+  (source-first OR target-first). Both ends funnel through one
+  direction-agnostic `async_step_anchor(side)`; the *other* end is
+  protocol-filtered by `_device_protocols_match()` in either direction.
+  `async_step_source` / `async_step_target` remain as back-compat aliases.
+- **Optional canopy step** (`async_step_canopy`): an intermediate relay /
+  ceiling-canopy module between source and target. Empty = direct one-hop
+  binding (v0.1.13 behaviour). Non-empty = a two-hop chain.
+- **Multi-hop compiler:** `AnchorCompiler.async_compile_multihop(chain, rules,
+  dry_run, group_name)` compiles a `chain` of wizard device entries
+  sequentially (hop *i* = `chain[i] → chain[i+1]`) through the same
+  per-protocol handlers as a one-hop binding. LEAT rows are compiled once and
+  attached to every hop; each hop is tagged with `hop_index`.
+- **Chain-Like vs. Broadcast-Like:** Chain-Like (physical power-gating ceiling
+  canopies) is the shipping path. Broadcast-Like (Multicast Group Mesh) is
+  roadmap only — documented in GUIDE_FOR_HUMANS.md Part 14, not implemented.
+- **Handler compatibility:** the Shelly handler accepts a `next_hop_ip`
+  fallback and the Tasmota handler accepts a single `target_ip`, so a one-hop
+  handler can also drive a chain leg.

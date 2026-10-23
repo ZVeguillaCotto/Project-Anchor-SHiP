@@ -567,30 +567,38 @@ flag (gesture = 0x8)" — see `sim/test_ship_core.c`.)*
 
 ---
 
-## Part 13: The Target-First Wizard — Picking Devices, Gestures & Time Windows
+## Part 13: The Bidirectional Wizard — Picking Devices, Gestures & Time Windows
 
 ### Layer 1 — The Kitchen-Table Explanation
 
 The setup wizard (Settings → Devices & Services → Add Integration → SHiP Anchor)
-starts by asking **what you want to control**, not which switch you'll use.
-Think of it like installing a 3-way light: you decide *where the lamp lives*
-first, then you pick *which switches reach it*.
+asks **which end of the chain you already know** — and then walks you to the
+other end. Since v0.1.14 it is fully **bidirectional**: you can start from the
+device you want to **control** (target-first) *or* from the switch/button you
+want to **use** (source-first). Think of it like installing a 3-way light: you
+may already know where the lamp lives, or you may already know where the
+switch lives — either way the wizard reaches the other end and connects them.
 
 Step by step:
 
-1. **Pick the target(s)** — choose one or more lights, fans, valves, locks or
-   shades. SHiP Anchor immediately detects each one's protocol (Zigbee,
-   Matter, Z-Wave, Shelly, Tasmota) and its *kind*.
-2. **Pick the source switch(es)** — *only* switches that speak the **same
-   protocol** as the target(s) are listed, so a Zigbee switch can never be
-   paired with a Z-Wave lock. Pick several switches to create a multi-way
+1. **Pick a direction** — "I want to control a device" (target-first) or
+   "I have a switch / button" (source-first).
+2. **Anchor that end** — choose one or more devices. SHiP Anchor immediately
+   detects the protocol (Zigbee, Matter, Z-Wave, Shelly, Tasmota) and, for
+   targets, their *kind*.
+3. **Pick the other end** — *only* devices that speak the **same protocol**
+   as the anchor are listed, so a Zigbee switch can never be paired with a
+   Z-Wave lock, in either direction. Pick several switches for a multi-way
    (3-way) setup.
-3. **Build the rule sheet** — up to four rules, each with a gesture (1x–5x
+4. **Build the rule sheet** — up to four rules, each with a gesture (1x–5x
    tap or Hold), an optional time-of-day window (e.g. active only between 22:00
    and 06:00), and the action parameters the target kind supports (brightness
    + colour temp for lights, speed for fans, open/close for valves,
    lock/unlock for locks).
-4. **Preview or apply** — dry-run prints the exact payloads (binding calls +
+5. **Optional intermediate module** — if the signal passes through a ceiling
+   canopy, relay box, or mesh repeater before reaching the load, name it here
+   (see Part 14). Leave empty for a direct one-hop binding.
+6. **Preview or apply** — dry-run prints the exact payloads (binding calls +
    LEAT rows) in the log; apply sends them to the devices.
 
 ### Layer 2 — The Engineering Ground Truth
@@ -615,7 +623,75 @@ Step by step:
 
 ---
 
-## Part 14: Ask an AI Agent with MCP
+## Part 14: Multi-Hop Canopy Routing — Chain-Like vs. Broadcast-Like Architectures
+
+### Layer 1 — The Kitchen-Table Explanation
+
+Some rooms are wired in a **chain**, not a single wire. A classic ceiling fan
+with a light kit is the usual example: the switch does not talk to the bulb
+directly. It talks to the **fan canopy** (the little motor / relay box under
+the ceiling), and *that* module powers the bulb. In smart-home terms:
+
+```
+  Switch  ────( Hop 1 )────►  Ceiling Canopy  ────( Hop 2 )────►  Bulb / Fan
+```
+
+A **multi-hop (chain-like) binding** is SHiP Anchor's way of programming that
+topology. You tell the wizard the switch, the canopy, and the load — and it
+builds **one payload per hop**, in order, so the gesture + rule travels through
+the canopy and out to the load. Every hop is a normal one-hop binding to the
+next device; the chain is just the sequence of those hops.
+
+This is the **immediate, shipping** implementation. It is ideal for **physical
+power-gating ceiling canopies**: the canopy is a real device on the same bus
+that must be told to pass the signal through, and the bulb behind it is a
+second leg.
+
+> **Why not just one broadcast?** Because in a chain the *middle* device is a
+> real participant — it has to receive Hop 1 and re-emit Hop 2. A single
+> multicast frame would skip it, and the bulb would never see the command.
+
+### Layer 2 — The Engineering Ground Truth
+
+`AnchorCompiler.async_compile_multihop(chain, rules, dry_run, group_name)`
+(`compiler.py`, v0.1.14) turns a list of wizard device entries — in the order
+the gesture should travel — into a **sequential** set of payloads:
+
+- **Hop 1:** `chain[0]` (switch) → `chain[1]` (canopy) is compiled through
+  the *same* per-protocol handler a one-hop binding uses.
+- **Hop 2:** `chain[1]` (canopy) → `chain[2]` (load) is compiled the same way.
+- **LEAT rows** are compiled **once** and attached to every hop, so the
+  gesture + time-window + parameters are identical at each stage of the chain.
+- Each hop's protocol is inferred from its **source** device's identifier
+  namespace (`_hop_protocol()`), so a Z-Wave switch can drive a Zigbee canopy
+  leg as long as that leg's own handler supports it.
+
+**Chain-Like (implemented now)** vs. **Broadcast-Like (roadmap):**
+
+| Aspect | Chain-Like (v0.1.14) | Broadcast-Like (future) |
+|---|---|---|
+| Topology | Sequential `A → B → C` | One frame to a **group** `{A, B, C}` |
+| Middle device | Actively participates (relays) | Passive listener (or absent) |
+| Frames on air | One per hop | One multicast, de-duplicated by group |
+| Best for | Power-gating canopies, physical relay boxes | Large fan / bulb clusters that should all flip together |
+| Status in this repo | **Implemented** in `compiler.py` | **Architectural roadmap** — not yet shipped |
+
+The **Broadcast-Like (Multicast Group Mesh)** approach is the next step on the
+roadmap: instead of N sequential hops, the group leader emits a single
+multicast to a ZCL Group / Tasmota Device-Group / Shelly multicast, and every
+member applies it locally (with the `NoStatusShare` lock from Part 12 to keep
+echo loops out). That is strictly more efficient for *large, flat* clusters
+where no middle device must relay — but it does **not** cover the physical
+canopy case, which is why the chain-like path ships first. The two are
+complementary: a canopy chain is a *sub-topology* that a future multicast mesh
+could wrap.
+
+*(Multi-hop is covered by `tests/test_multihop_unit.py` — Layer 1 of the
+Testing Pyramid — and the end-to-end wizard path in `tests/test_integration.py`.)*
+
+---
+
+## Part 15: Ask an AI Agent with MCP
 
 ### Layer 1 — The Kitchen-Table Explanation
 
