@@ -121,10 +121,42 @@ about what is simulated versus measured on real hardware.
 | `esphome/components/ship_fastpath/ship_fastpath.cpp` | ESPHome runtime behavior |
 | `esphome/components/ship_fastpath/example_esp32c6_switch.yaml` | Example ESP32-C6 configuration |
 | `hacs.json` | HACS repository metadata |
+| `tests/conftest.py` | Pytest bootstrap: stubs `voluptuous` + `homeassistant.*` and provides `fake_hass` / `fake_store` fixtures |
+| `tests/test_compiler_unit.py` | **Layer 1** — pure-logic tests for the LEAT builder and rule domain/action mapping |
+| `tests/test_config_flow_unit.py` | **Layer 1** — protocol-match, target-kind, capability, and protocol-inference unit tests |
+| `tests/test_integration.py` | **Layer 2** — wizard steps, `.storage/ship_anchor.bindings` round-trip, and resilient `erase_all` |
+
+### Testing Pyramid
+
+SHiP Anchor is verified by the industry-standard **Testing Pyramid**, bottom-up.
+Each layer is independent and can run on a plain computer (no Home Assistant box,
+no radios, no network) until the very top:
+
+| Layer | What it is | Command | Target |
+|---|---|---|---|
+| **1 — Unit** | Fast, isolated tests of pure logic: `_device_protocols_match()`, `_target_kind()`, `_infer_protocol()`, `TARGET_CAPABILITIES`, and the LEAT row mapping (`build_leat_table()`, `_rule_domain()`, `_rule_action()`). No HA, no I/O. | `python3 -m pytest tests/ -v` | 36 passed |
+| **2 — Integration** | Component tests that wire the wizard, the persistent store (`.storage/ship_anchor.bindings`), and `AnchorCompiler` together: cross-protocol source filtering, full target→source→behaviour→finish flow, JSON serialisation round-trip, and the resilient `erase_all`. | `python3 -m pytest tests/ -v` | (included above) |
+| **3 — System / disaster** | The C protocol core (`test_ship_core.c`) and the Python simulation + MCP disaster drills (`run_anchor_benchmarks.py`), which *do* touch the real 19-byte encoder, SipHash, LEAT, Mesh-RTC, and radio HAL. | `gcc … && /tmp/test_ship_core` and `python3 sim/run_anchor_benchmarks.py` | 10/10 and 6/6 |
+
+The base is wide and cheap (run on every change); the top is narrow and
+expensive (run before release). **The invariant to protect:** the LEAT rows
+produced at Layer 1 are field-for-field identical to the `ship_leat_entry_t`
+struct asserted by the C suite at Layer 3 — a mismatch between the two is a
+release blocker.
+
+> **Honest caveat:** `pytest` is a dev dependency (installed via
+> `python3 -m pip install --user pytest` in the authoring environment). The
+> integration tests stub `voluptuous` and `homeassistant.*` via
+> `tests/conftest.py`, so they run without Home Assistant installed. CI should
+> `pip install pytest` before running `python3 -m pytest tests/ -v`.
 
 ### Run and validate
 
 ```bash
+# Layer 1 + 2 — unit and integration (needs `pip install pytest`)
+python3 -m pytest tests/ -v
+
+# Layer 3 — C protocol core (10/10) and simulation/MCP disaster drills (6/6)
 gcc -Wall -Wextra -Werror -std=c11 -DSHIP_PLATFORM_NATIVE \
   -I src/ship_core sim/test_ship_core.c \
   src/ship_core/ship_protocol.c src/ship_core/ship_radio_hal.c \

@@ -1,0 +1,282 @@
+"""
+============================================================================
+SHiP Anchor — tests/test_integration.py  (LAYER 2: INTEGRATION TESTS)
+============================================================================
+
+LAYER 1 — THE KITCHEN-TABLE EXPLANATION (ELI5)
+-----------------------------------------------
+The "middle of the pyramid". Instead of testing one brain-cell at a time (the
+unit layer), here we wire several SHiP Anchor parts together and check they
+play nicely:
+
+  • The wizard (``ShipAnchorConfigFlow``) walks target → source → behaviour →
+    finish, only ever offering switches that *can* reach the chosen target
+    (the cross-protocol guard), and finally records the collected "rule
+    sheets" on the config entry.
+  • The persistent store (``.storage/ship_anchor.bindings``) round-trips a
+    compiled binding: compile → save to disk → load back → list it again,
+    proving the data is JSON-serialisable and lossless.
+  • "Erase everything" clears the store even when one of the saved bindings
+    is broken or its device is offline — the user always gets a clean
+    success, never a traceback.
+
+These tests run with Home Assistant *stubbed out* (see ``conftest.py``) —
+no HA box, no radios, no network. Only the top of the pyramid (the C core and
+the disaster drills) touches real hardware paths.
+
+LAYER 2 — THE UNDER-THE-HOOD IMPLEMENTATION
+--------------------------------------------
+- Fake device + entity registries are installed by monkeypatching
+  ``config_flow.dr.async_get`` / ``config_flow.er.async_get``.
+- The persistent store is the JSON-round-tripping fake from ``conftest.py``.
+- Async tests use ``@pytest.mark.asyncio``-free helpers: we run the coroutines
+  with ``asyncio.run`` so no extra plugin is required.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from dataclasses import asdict
+from types import SimpleNamespace
+
+import pytest
+
+import custom_components.ship_anchor.config_flow as config_flow
+from custom_components.ship_anchor.compiler import AnchorCompiler, BindingRecord
+from tests.conftest import _make_fake_hass, _make_fake_store
+
+
+def _run(coro):
+    """ELI5: run one async function to completion without a pytest plugin.
+
+    A fresh event loop per call keeps the coroutine world isolated from any
+    other test, which mirrors how Home Assistant drives a flow in its own
+    loop.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+# ---------------------------------------------------------------------------
+# Fake registries
+# ---------------------------------------------------------------------------
+class FakeDeviceRegistry:
+    def __init__(self, devices):
+        self.devices = devices
+
+    def async_get(self, device_id):
+        return self.devices.get(device_id)
+
+
+class FakeEntityRegistry:
+    def __init__(self, entities):
+        self.entities = entities
+
+
+def _device(id, model, manufacturer="", identifiers=()):
+    return SimpleNamespace(
+        id=id, model=model, manufacturer=manufacturer,
+        identifiers=identifiers, name_by_user=None, name=id,
+    )
+
+
+def _entity(device_id, platform):
+    return SimpleNamespace(device_id=device_id, platform=platform)
+
+
+@pytest.fixture
+def registries():
+    """ELI5: a small home — two Zigbee switches, a Zigbee light, and a
+    Z-Wave switch + lock. The Z-Wave devices exist so we can prove the
+    wizard never offers them as a source for a Zigbee target."""
+    devices = {
+        "sw_a": _device("sw_a", "TS0505B", "Tuya",
+                        identifiers=(("zha", "001788fffe00aabbcc"),)),
+        "sw_b": _device("sw_b", "TS0505B", "Tuya",
+                        identifiers=(("zha", "001788fffe00ddeeff"),)),
+        "light1": _device("light1", "LCA001", "IKEA",
+                          identifiers=(("zha", "001798fffe00112233"),)),
+        "zw_sw": _device("zw_sw", "ZW158 switch", "AEON",
+                         identifiers=(("zwave_js", "3"),)),
+        "zw_lock": _device("zw_lock", "UL395BE", "Yale",
+                           identifiers=(("zwave_js", "7"),)),
+    }
+    entities = {
+        "e_sw_a": _entity("sw_a", "switch"),
+        "e_sw_b": _entity("sw_b", "button"),
+        "e_light1": _entity("light1", "light"),
+        "e_zw_sw": _entity("zw_sw", "switch"),
+        "e_zw_lock": _entity("zw_lock", "lock"),
+    }
+    return FakeDeviceRegistry(devices), FakeEntityRegistry(entities)
+
+
+@pytest.fixture
+def patched_registries(registries, monkeypatch):
+    device_reg, entity_reg = registries
+    monkeypatch.setattr(config_flow.dr, "async_get", lambda hass: device_reg)
+    monkeypatch.setattr(config_flow.er, "async_get", lambda hass: entity_reg)
+    return device_reg, entity_reg
+
+
+def _source_option_values(form: dict) -> set:
+    """ELI5: pull the dropdown values out of the wizard's source-picker form."""
+    schema = form["data_schema"]._schema
+    src_key = next(k for k in schema if k.key == "sources")
+    return {opt["value"] for opt in schema[src_key].config.options}
+
+
+# ---------------------------------------------------------------------------
+# 1 — the wizard only offers same-protocol sources
+# ---------------------------------------------------------------------------
+def test_wizard_source_filter_excludes_cross_protocol(patched_registries) -> None:
+    flow = config_flow.ShipAnchorConfigFlow()
+    flow.hass = _make_fake_hass()
+
+    # ELI5: pick the Zigbee light as the target …
+    form = _run(flow.async_step_target({"targets": ["light1"]}))
+    assert form["step_id"] == "source"
+
+    # … so the source dropdown must list the two Zigbee switches and NOT the
+    # Z-Wave switch (which could never reach a Zigbee light).
+    values = _source_option_values(form)
+    assert "sw_a" in values
+    assert "sw_b" in values
+    assert "zw_sw" not in values
+
+
+def test_wizard_source_filter_for_zwave_target(patched_registries) -> None:
+    flow = config_flow.ShipAnchorConfigFlow()
+    flow.hass = _make_fake_hass()
+
+    form = _run(flow.async_step_target({"targets": ["zw_lock"]}))
+    values = _source_option_values(form)
+    assert "zw_sw" in values
+    assert "sw_a" not in values
+    assert "sw_b" not in values
+
+
+# ---------------------------------------------------------------------------
+# 2 — the full wizard records the collected rules on the entry
+# ---------------------------------------------------------------------------
+def test_wizard_full_flow_creates_entry_with_rules(patched_registries) -> None:
+    flow = config_flow.ShipAnchorConfigFlow()
+    flow.hass = _make_fake_hass()
+
+    # Step 1 → target.
+    _run(flow.async_step_target({"targets": ["light1"]}))
+    # Step 2 → source (Zigbee switch).
+    _run(flow.async_step_source({"sources": ["sw_a"]}))
+    # Step 3 → behaviour: one 3x-tap rule that dims the light.
+    _run(flow.async_step_behavior({
+        "rule1_gesture": "3x Tap",
+        "rule1_brightness": 120,
+        "rule1_color_temp_mireds": 350,
+        "rule1_transition_seconds": 2,
+    }))
+    # Step 4 → finish (dry-run).
+    result = _run(flow.async_step_finish({"dry_run": True}))
+
+    # ELI5: the entry is created and carries the rule sheet the user typed.
+    assert result["created"] is True
+    data = result["data"]
+    assert data["rules"] and data["rules"][0]["gesture"] == "3x Tap"
+    rule = data["rules"][0]
+    assert rule["brightness"] == 120
+    assert rule["color_temp_mireds"] == 350
+    assert rule["transition_seconds"] == 2
+    assert data["targets"][0]["device_id"] == "light1"
+    assert data["sources"][0]["device_id"] == "sw_a"
+    # The finish step always records a compile summary for the UI.
+    assert "compile" in data
+
+
+# ---------------------------------------------------------------------------
+# 3 — storage round-trip: compile → save → load → list
+# ---------------------------------------------------------------------------
+def test_storage_roundtrip_serialises_and_lists() -> None:
+    # ELI5: compile a Shelly binding (dry-run — nothing is sent), persist the
+    # result to a fake ".storage/ship_anchor.bindings", then read it back with
+    # a brand-new compiler and confirm it still lists.
+    fake_hass = _make_fake_hass()
+    store = _make_fake_store()
+    compiler = AnchorCompiler(fake_hass, store, stored_data={})
+
+    config = {
+        "protocol": "shelly",
+        "shelly_ip": "192.0.2.10",
+        "target_ip": "192.0.2.20",
+        "target_command": "on",
+    }
+    result = _run(compiler.async_compile_config(config, dry_run=True))
+    assert result.bindings_added, "ELI5: a Shelly binding should compile"
+
+    # Persist exactly the way the wizard's finish step does for a live run.
+    compiler._stored_data.setdefault("bindings", []).extend(
+        asdict(b) for b in result.bindings_added
+    )
+    _run(compiler._store.async_save(compiler._stored_data))
+
+    # The fake store proves the payload is JSON-serialisable (it round-trips).
+    persisted = json.loads(json.dumps(store.saved))
+    assert persisted["bindings"][0]["source_ieee"] == "192.0.2.10"
+
+    # A fresh compiler + fresh store re-hydrates the binding — mirroring
+    # `_async_setup_runtime`, which loads the store BEFORE building the
+    # compiler.
+    reloaded_store = _make_fake_store(persisted=persisted)
+    stored = _run(reloaded_store.async_load())
+    reloaded = AnchorCompiler(fake_hass, reloaded_store, stored_data=stored)
+    records = reloaded.list_bindings()
+    assert len(records) == 1
+    assert records[0].protocol == "shelly"
+    assert records[0].source_ieee == "192.0.2.10"
+    assert records[0].target_ieee == "192.0.2.20"
+
+
+def test_list_bindings_skips_malformed_rows() -> None:
+    # ELI5: a half-written store row must not crash the list view — it is
+    # skipped with a warning and the good rows still come back.
+    good = asdict(BindingRecord(
+        protocol="shelly", source_ieee="192.0.2.10", target_ieee="192.0.2.20",
+        clusters=[], group_id=None, preflight_done=True,
+    ))
+    compiler = AnchorCompiler(
+        _make_fake_hass(), _make_fake_store(),
+        stored_data={"bindings": [good, {"weird": 1}, {"protocol": "tasmota"}]},
+    )
+    records = compiler.list_bindings()
+    # ELI5: only the fully-shaped row survives; the two malformed ones are
+    # skipped rather than raising.
+    assert len(records) == 1
+    assert records[0].protocol == "shelly"
+
+
+# ---------------------------------------------------------------------------
+# 4 — erase_all is resilient (the v0.1.9 guarantee)
+# ---------------------------------------------------------------------------
+def test_erase_all_clears_store_even_with_bad_bindings() -> None:
+    # ELI5: "erase everything" must ALWAYS clear the store, even if a binding
+    # is broken or its device is offline. We mix one good Shelly binding with
+    # a malformed row and confirm no exception escapes and the store is
+    # cleared + saved.
+    good = asdict(BindingRecord(
+        protocol="shelly", source_ieee="192.0.2.10", target_ieee="192.0.2.20",
+        clusters=[], group_id=None, preflight_done=True,
+    ))
+    store = _make_fake_store()
+    compiler = AnchorCompiler(
+        _make_fake_hass(), store,
+        stored_data={"bindings": [good, {"broken": True}]},
+    )
+
+    # ELI5: this must not raise, regardless of per-binding transport failure.
+    _run(compiler.async_erase_all())
+
+    assert compiler._stored_data["bindings"] == []
+    assert store.saved is not None
+    assert store.saved["bindings"] == []
