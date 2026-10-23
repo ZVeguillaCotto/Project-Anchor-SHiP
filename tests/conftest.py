@@ -218,12 +218,30 @@ def _make_fake_hass(services_calls: list | None = None) -> Any:
         def path(self, *parts: str) -> str:
             return "/tmp/ship_anchor_tests/{}".format("/".join(parts))
 
+    class _ConfigEntries:
+        """ELI5: records ``async_update_entry`` calls and applies the new
+        ``data`` onto the target config entry, exactly like HA does. This is
+        what the v0.1.15 options-flow dashboard uses to persist added/deleted
+        rules and bindings."""
+
+        def __init__(self) -> None:
+            self.updates: list = []
+
+        async def async_update_entry(self, entry: Any, **kwargs: Any) -> bool:
+            if "data" in kwargs:
+                entry.data = kwargs["data"]
+            if "options" in kwargs:
+                entry.options = kwargs["options"]
+            self.updates.append((entry, kwargs))
+            return True
+
     class FakeHass:
         def __init__(self) -> None:
             self.data: dict = {}
             self.services = _Services()
             self.states = _States()
             self.config = _Config()
+            self.config_entries = _ConfigEntries()
 
     return FakeHass()
 

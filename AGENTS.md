@@ -19,7 +19,7 @@ linked C and Python commands after making changes.
 SHiP Anchor is verified bottom-up. All three layers run on a plain computer
 (no HA box, no radios) — the top two just get slower and more realistic:
 
-1. **Unit** (`tests/test_compiler_unit.py`, `tests/test_config_flow_unit.py`, `tests/test_multihop_unit.py`)
+1. **Unit** (`tests/test_compiler_unit.py`, `tests/test_config_flow_unit.py`, `tests/test_multihop_unit.py`, `tests/test_options_dashboard.py`)
    — pure logic: protocol matching, target kind, capabilities, LEAT row
    mapping, and the multi-hop chain compiler.
    Run: `python3 -m pytest tests/ -v` (needs `pip install pytest`).
@@ -73,3 +73,35 @@ A mismatch is a release blocker.
 - **Handler compatibility:** the Shelly handler accepts a `next_hop_ip`
   fallback and the Tasmota handler accepts a single `target_ip`, so a one-hop
   handler can also drive a chain leg.
+
+## v0.1.15 — Visual Options Flow Dashboard (read before the options flow)
+
+The Options Flow is now a **Visual LEAT & Multi-Hop Inspector** — a dashboard
+in `Settings → Devices & Services → SHiP Anchor → Configure` that lets a
+non-engineer *read and edit* a binding in plain English.
+
+- **Flow steps** (`ShipAnchorOptionsFlow` in `custom_components/ship_anchor/config_flow.py`):
+  `dashboard` (init) → `add_rule` → `select_rule` → `delete_binding`.
+  The `dashboard` step renders the whole binding (chain + protocol + group +
+  rules) as a markdown `description` and offers an **action** dropdown:
+  *Add a rule*, *Delete a rule*, *Delete a source binding*, *Erase all
+  device programming*, *Recompile (restart the wizard)*, or *Just close this
+  dialog*.
+- **ELI5 rule translators (pure, unit-testable):** `_GESTURE_ELI5`,
+  `_rule_window_phrase(rule)`, `_rule_actions_phrase(rule)`, and
+  `_rule_eli5(rule)` turn a raw LEAT rule dict into one English sentence.
+  They are stable-ordered and never touch I/O, so the unit layer asserts the
+  exact wording (e.g. `"On a triple tap: set brightness to 120, set colour
+  temperature to 350 mireds and fade over 2 s."`).
+- **Read + write the entry:** the dashboard reads `config_entry.data`;
+  `add_rule` / `select_rule` / `delete_binding` mutate `data["rules"]` or
+  `data["sources"]` and persist via `hass.config_entries.async_update_entry`.
+  `erase_all` still calls `AnchorCompiler.async_erase_all()` (v0.1.9
+  resilience kept); `recompile` aborts with `restart_wizard`.
+- **Strings:** `strings.json` `options` section now has `dashboard`,
+  `add_rule`, `select_rule`, `delete_binding` steps plus their error keys.
+  `translations/en.json` is kept in sync with `strings.json`.
+- **Tests:** `tests/test_options_dashboard.py` (Layer 1 + 2) covers the ELI5
+  rule translation, the dashboard chain rendering (including the two-hop
+  canopy chain), and the add-rule / delete-rule / delete-binding / erase-all
+  round trips against the fake `config_entries.async_update_entry`.

@@ -131,6 +131,41 @@ about what is simulated versus measured on real hardware.
   (Layer 2) covers the bidirectional wizard, the source-first flow, and the
   two-hop canopy chain.
 
+### v0.1.15 — Visual Options Flow Dashboard & LEAT Inspector
+
+The Options Flow is now a **Visual LEAT & Multi-Hop Inspector** — a dashboard
+you open from `Settings → Devices & Services → SHiP Anchor → Configure`, not a
+set of hidden buttons. It lets a non-engineer *read and edit* a binding in
+plain English. ELI5: instead of showing you a blob of JSON, it says
+"Source: Hall Switch. Target: Kitchen Light. Rules: (1) On a double tap:
+set brightness to 128. (2) On a long press (between 22:00 and 06:00): open the
+valve."
+
+- **Flow steps** (`ShipAnchorOptionsFlow` in `custom_components/ship_anchor/config_flow.py`):
+  `dashboard` (init) → `add_rule` → `select_rule` → `delete_binding`.
+  The `dashboard` step renders a markdown `description` (the whole binding) and
+  a single **action** dropdown: *Add a rule*, *Delete a rule*, *Delete a
+  source binding*, *Erase all device programming*, *Recompile (restart the
+  wizard)*, or *Just close this dialog*.
+- **ELI5 rule translators (pure, unit-testable):** `_GESTURE_ELI5`,
+  `_rule_window_phrase(rule)`, `_rule_actions_phrase(rule)`, and
+  `_rule_eli5(rule)` turn a raw LEAT rule dict into one English sentence.
+  They are stable-ordered and never touch I/O, so the unit layer asserts the
+  exact wording.
+- **Read + write the entry:** the dashboard reads `config_entry.data`;
+  `add_rule` / `select_rule` / `delete_binding` mutate `data["rules"]` or
+  `data["sources"]` and persist via `hass.config_entries.async_update_entry`.
+  `erase_all` still calls `AnchorCompiler.async_erase_all()` (v0.1.9
+  resilience: a missing compiler or store is a clean error, not a crash).
+  `recompile` aborts with `restart_wizard` so the user re-runs the wizard.
+- **Strings:** `strings.json` `options` section now has `dashboard`,
+  `add_rule`, `select_rule`, `delete_binding` steps plus their error keys.
+  `translations/en.json` (which was stale at v0.1.12) is re-synced to match.
+- **Tests:** `tests/test_options_dashboard.py` (Layer 1 + 2) covers the ELI5
+  rule translation, the dashboard chain rendering (including the two-hop
+  canopy chain), and the add-rule / delete-rule / delete-binding / erase-all
+  round trips against the fake `config_entries.async_update_entry`.
+
 ### Repository map
 
 | Path | Purpose |
@@ -144,7 +179,7 @@ about what is simulated versus measured on real hardware.
 | `custom_components/ship_anchor/compiler.py` | Automation parser, multi-protocol binding compiler, LEAT rule compiler, and multi-hop chain compiler |
 | `custom_components/ship_anchor/quirks_inspector.py` | Zigbee endpoint, preflight, and group inspection |
 | `custom_components/ship_anchor/__init__.py` | Home Assistant integration setup and services |
-| `custom_components/ship_anchor/config_flow.py` | Bidirectional wizard (direction → anchor → other-end → behavior → canopy → finish) and options flow |
+| `custom_components/ship_anchor/config_flow.py` | Bidirectional wizard (direction → anchor → other-end → behavior → canopy → finish), visual options-flow dashboard & LEAT inspector |
 | `custom_components/ship_anchor/automation.py` | HA automation normalization + entity-registry protocol fallback |
 | `custom_components/ship_anchor/manifest.json` | Home Assistant integration metadata |
 | `mcp/ship_anchor_mcp.py` | Seven-tool MCP stdio server (inspect, compile, bake LEAT, list bindings, encode/decode, verify), CLI, and demo |
@@ -161,6 +196,7 @@ about what is simulated versus measured on real hardware.
 | `tests/test_config_flow_unit.py` | **Layer 1** — protocol-match, target-kind, capability, and protocol-inference unit tests |
 | `tests/test_integration.py` | **Layer 2** — wizard steps, `.storage/ship_anchor.bindings` round-trip, and resilient `erase_all` |
 | `tests/test_multihop_unit.py` | **Layer 1** — `_hop_protocol`, `_hop_source_config`, and `async_compile_multihop` chain tests |
+| `tests/test_options_dashboard.py` | **Layer 1 + 2** — ELI5 rule translation and the visual options-flow dashboard (add/delete rule, delete binding, erase-all) |
 
 ### Testing Pyramid
 
@@ -170,7 +206,7 @@ no radios, no network) until the very top:
 
 | Layer | What it is | Command | Target |
 |---|---|---|---|
-| **1 — Unit** | Fast, isolated tests of pure logic: `_device_protocols_match()`, `_target_kind()`, `_infer_protocol()`, `TARGET_CAPABILITIES`, and the LEAT row mapping (`build_leat_table()`, `_rule_domain()`, `_rule_action()`). No HA, no I/O. | `python3 -m pytest tests/ -v` | 36 passed |
+| **1 — Unit** | Fast, isolated tests of pure logic: `_device_protocols_match()`, `_target_kind()`, `_infer_protocol()`, `TARGET_CAPABILITIES`, the LEAT row mapping (`build_leat_table()`, `_rule_domain()`, `_rule_action()`), the multi-hop chain compiler, and the options-dashboard ELI5 rule translators. No HA, no I/O. | `python3 -m pytest tests/ -v` | 62 passed (all layers combined) |
 | **2 — Integration** | Component tests that wire the wizard, the persistent store (`.storage/ship_anchor.bindings`), and `AnchorCompiler` together: cross-protocol source filtering, full target→source→behaviour→finish flow, JSON serialisation round-trip, and the resilient `erase_all`. | `python3 -m pytest tests/ -v` | (included above) |
 | **3 — System / disaster** | The C protocol core (`test_ship_core.c`) and the Python simulation + MCP disaster drills (`run_anchor_benchmarks.py`), which *do* touch the real 19-byte encoder, SipHash, LEAT, Mesh-RTC, and radio HAL. | `gcc … && /tmp/test_ship_core` and `python3 sim/run_anchor_benchmarks.py` | 10/10 and 6/6 |
 
@@ -191,7 +227,6 @@ release blocker.
 ```bash
 # Layer 1 + 2 — unit and integration (needs `pip install pytest`)
 python3 -m pytest tests/ -v
-
 # Layer 3 — C protocol core (10/10) and simulation/MCP disaster drills (6/6)
 gcc -Wall -Wextra -Werror -std=c11 -DSHIP_PLATFORM_NATIVE \
   -I src/ship_core sim/test_ship_core.c \

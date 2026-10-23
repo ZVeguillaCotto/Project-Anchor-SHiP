@@ -725,5 +725,79 @@ tokens; model-specific BPE token counts vary by MCP client.
 
 ---
 
+## Part 16: The Visual LEAT & Multi-Hop Inspector Dashboard
+
+### Layer 1 — The Kitchen-Table Explanation
+
+Remember the options dialog being "a set of hidden buttons"? In v0.1.15 it is
+now a **dashboard** you can *read and edit* in plain English — like the
+"About" page of a phone, except for your offline switch bindings.
+
+Open it from **Settings → Devices & Services → SHiP Anchor → Configure**.
+Instead of a wall of JSON, the dashboard says:
+
+> **Chain:** Hall Switch → Ceiling Canopy → Kitchen Light
+> **Protocol:** ZHA (Zigbee)
+> **Configured LEAT rules (2).**
+> 1. On a double tap: set brightness to 128.
+> 2. On a long press (between 22:00 and 06:00): open the valve.
+
+That last line is the whole point: **every rule is one English sentence** that
+a non-engineer can understand at a glance — including the time-of-day window
+and the chain it rides through. From the same screen you pick an action:
+
+- **Add a rule** — fill in a gesture (single/double/…/quintuple tap or a long
+  press), an optional time window, and the action fields for your target kind
+  (brightness for a light, speed for a fan, open/close for a valve, lock state
+  for a lock, setpoint for climate).
+- **Delete a rule** — a dropdown lists every rule as its English sentence;
+  pick one and it is removed.
+- **Delete a source binding** — remove one of the multi-way switches from the
+  group.
+- **Erase all device programming** — the v0.1.9-safe "wipe everything" (still a
+  clean error, never a crash, if the runtime is missing).
+- **Recompile** — restarts the wizard so you can rebuild the binding from
+  scratch.
+- **Just close this dialog** — read-only; nothing is changed.
+
+Adding or deleting a rule writes straight back to the config entry (through
+`hass.config_entries.async_update_entry`), so the change is saved and the
+dashboard re-renders with your updated rules.
+
+### Layer 2 — The Engineering Ground Truth
+
+The `ShipAnchorOptionsFlow` in `custom_components/ship_anchor/config_flow.py`
+has four steps: `dashboard` (init), `add_rule`, `select_rule` (delete a rule),
+and `delete_binding` (delete a source). The dashboard renders the entry's
+`data` (source(s), optional canopy, target(s), protocol, group, and rules) as
+a markdown `description` plus a single **action** `SelectSelector`.
+
+The ELI5 sentence builders are **pure functions** (no I/O), so the unit layer
+can assert their exact wording:
+
+- `_GESTURE_ELI5` maps `2x Tap` → "a double tap", `Hold` → "a long press", …
+- `_rule_window_phrase(rule)` → `"between 22:00 and 06:00"` or `""` (no
+  window); a `None` hour becomes "any hour".
+- `_rule_actions_phrase(rule)` → stable-ordering join of the present action
+  fields (brightness → colour temp → fade → fan speed → valve → lock →
+  setpoint); empty → `"toggle the target (on / off)"`.
+- `_rule_eli5(rule)` → one sentence, e.g.
+  `"On a triple tap: set brightness to 120, set colour temperature to 350
+  mireds and fade over 2 s."`
+
+The `add_rule` schema adapts to the target's kind via `TARGET_CAPABILITIES`
+(`_target_capabilities(data)`), the same capability table the wizard uses.
+Rule and source indices come back as **strings** from the flow UI and are
+validated before being used (`rule_index_out_of_range` /
+`source_index_out_of_range`). `erase_all` resolves the compiler from
+`hass.data[DOMAIN]["compiler"]` exactly as `__init__.py` does, so a missing
+runtime yields `errors["base"] = "no_runtime"` rather than an exception.
+
+The dashboard is **Home Assistant UI-only**: it does not add MCP tools (the MCP
+surface stays at seven tools in v0.1.15) and it does not change the wire
+format.
+
+---
+
 *Guide written for SHiP v0.1 (Project Anchor) — October 2026.*
 *"ELI5 First, Engineering Second." — The Anchor Mandate.*

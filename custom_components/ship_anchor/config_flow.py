@@ -135,6 +135,100 @@ def _device_ieee(device: Any) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# ELI5 rule → plain-English translation (v0.1.15 options dashboard)
+# ---------------------------------------------------------------------------
+# The wizard stores rules as "raw" dicts — {gesture: "3x Tap", hour_start: 22,
+# hour_end: 6, brightness: 120, color_temp_mireds: 350, ...}. The options
+# dashboard needs to show them to a non-technical user in a sentence they can
+# actually read: "On 3x Tap (between 22:00 and 06:00): set brightness to 120
+# and colour temperature to 350 mireds."
+#
+# These helpers keep the mapping in one place so both the wizard's behaviour
+# step and the options-flow dashboard stay in sync. They are pure Python —
+# no Home Assistant, no I/O — which makes them trivially unit-testable.
+
+_GESTURE_ELI5 = {
+    "1x Tap": "a single tap",
+    "2x Tap": "a double tap",
+    "3x Tap": "a triple tap",
+    "4x Tap": "a quadruple tap",
+    "5x Tap": "a quintuple tap",
+    "Hold": "a long press",
+}
+
+
+def _rule_window_phrase(rule: dict) -> str:
+    """ELI5: turn ``hour_start`` / ``hour_end`` into a time-of-day phrase.
+
+    ``22 → 6`` renders as "between 22:00 and 06:00" (overnight windows are
+    honoured by the C core's ``ship_leat_match`` branch). A missing window
+    yields "" so the sentence flows naturally.
+    """
+    hour_start = rule.get("hour_start")
+    hour_end = rule.get("hour_end")
+    if hour_start is None and hour_end is None:
+        return ""
+    def _fmt(value: Any) -> str:
+        if value is None:
+            return "any hour"
+        try:
+            return "{:02d}:00".format(int(value) % 24)
+        except (TypeError, ValueError):
+            return str(value)
+    return "between {} and {}".format(_fmt(hour_start), _fmt(hour_end))
+
+
+def _rule_actions_phrase(rule: dict) -> str:
+    """ELI5: turn the action parameters into a plain-English phrase.
+
+    The order of the parameters is deliberately stable (brightness → colour
+    temp → transition → fan speed → valve → lock → setpoint) so that a
+    rule with the same set of parameters always reads the same way.
+    """
+    actions: list[str] = []
+    if "brightness" in rule:
+        actions.append("set brightness to {}".format(rule["brightness"]))
+    if "color_temp_mireds" in rule:
+        actions.append("set colour temperature to {} mireds".format(rule["color_temp_mireds"]))
+    if "transition_seconds" in rule:
+        actions.append("fade over {} s".format(rule["transition_seconds"]))
+    if "fan_speed" in rule:
+        actions.append("set fan speed to level {}".format(rule["fan_speed"]))
+    if "valve_open" in rule:
+        actions.append("{} the valve".format("open" if rule["valve_open"] else "close"))
+    if "lock_unlock" in rule:
+        actions.append("{} the lock".format("unlock" if rule["lock_unlock"] else "lock"))
+    if "setpoint_c" in rule:
+        actions.append("set the setpoint to {} °C".format(rule["setpoint_c"]))
+    if not actions:
+        return "toggle the target (on / off)"
+    # ELI5: join with ", " and a final " and " — "a, b and c".
+    if len(actions) == 1:
+        return actions[0]
+    return ", ".join(actions[:-1]) + " and " + actions[-1]
+
+
+def _rule_eli5(rule: dict) -> str:
+    """ELI5: one full sentence describing a single LEAT rule.
+
+    Examples:
+      {"gesture": "3x Tap", "brightness": 120}
+        → "On a triple tap: set brightness to 120."
+      {"gesture": "Hold", "hour_start": 22, "hour_end": 6, "valve_open": True}
+        → "On a long press (between 22:00 and 06:00): open the valve."
+    """
+    gesture_label = str(rule.get("gesture", ""))
+    gesture = _GESTURE_ELI5.get(gesture_label, gesture_label or "a gesture")
+    window = _rule_window_phrase(rule)
+    actions = _rule_actions_phrase(rule)
+    if window:
+        prefix = "On {} ({})".format(gesture, window)
+    else:
+        prefix = "On {}".format(gesture)
+    return "{}: {}.".format(prefix, actions)
+
+
 def _infer_protocol(device: Any) -> Protocol:
     """
     ELI5: guess which protocol a device talks to by looking at its
@@ -855,33 +949,161 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(cls, config_entry: Any) -> Any:
         """ELI5: expose the options flow so the user can click
         'Configure' on the integration card later to view / edit / erase
-        bindings without redoing the whole wizard."""
+        bindings without redoing the whole wizard.
+
+        v0.1.15 — the options flow is now a **Visual LEAT & Multi-Hop
+        Inspector Dashboard**: it renders the current chain (source →
+        canopy → targets), the configured LEAT rules in plain English,
+        and offers add-rule / delete-rule / delete-binding / erase-all /
+        recompile actions — all from inside Home Assistant's options
+        dialog, with no Developer-Tools or log reading required.
+        """
         return ShipAnchorOptionsFlow(config_entry)
 
 
 class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
     """
-    ELI5: a small "control panel" that shows every binding SHiP Anchor
-    has baked in, and lets the user erase one (or all of them) with a
-    single click. No new hardware is programmed here — this flow is
-    read + undo only.
+    ELI5: the **Visual LEAT & Multi-Hop Inspector Dashboard**.
+
+    A rich, interactive card that lives inside Home Assistant's standard
+    options dialog (Settings → Devices & Services → SHiP Anchor →
+    Configure). It shows:
+
+      • The **active multi-hop chain** (source → canopy → target), with
+        protocol labels so the user can see at a glance which bus each leg
+        speaks.
+      • Every **configured LEAT rule**, translated from the raw gesture / /
+        time-window / action parameters into a plain-English sentence
+        ("On a triple tap (between 22:00 and 06:00): set brightness to 120
+        and colour temperature to 350 mireds.").
+
+    And it lets the user, all without leaving the dialog:
+
+      • **Add** a new gesture rule to the existing binding.
+      • **Delete** a specific rule (instead of the old "erase all" nuclear
+        option).
+      • **Delete** a specific source binding (useful for multi-way setups
+        where one of the switches is being decommissioned).
+      • **Erase all** bindings (kept as the v0.1.9 resilient option).
+      • **Recompile** — re-run the wizard to re-apply the binding.
     """
 
     def __init__(self, config_entry: Any) -> None:
+        super().__init__(config_entry)
+        # ELI5: the options flow is opened on a *specific* config entry, so
+        # keep a reference to it for the whole flow. ``hass`` is injected by
+        # Home Assistant (and by the test stub) before the first step runs.
         self._config_entry = config_entry
+        self._entry = config_entry
 
+    # ------------------------------------------------------------------
+    # Persistence helpers
+    # ------------------------------------------------------------------
     def _compiler(self) -> Any:
         """Fetch the shared compiler, or None if the integration isn't
         fully set up yet."""
+        if self.hass is None:
+            return None
         runtime = self.hass.data.get(DOMAIN, {})
         return runtime.get("compiler")
 
-    async def async_step_init(self, user_input: dict | None = None):
-        """ELI5: show the list of current bindings and offer actions."""
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            action = str(user_input.get("action", "list"))
+    def _entry_data(self) -> dict:
+        """ELI5: the config entry's data dict, guaranteed to be a dict.
 
+        Config entries store their state in a single JSON-serialisable
+        ``data`` dict; we read it here and write it back through
+        ``hass.config_entries.async_update_entry`` at the end of each
+        action. A fresh entry (no data yet) returns an empty dict.
+        """
+        data = getattr(self._entry, "data", None) or {}
+        return dict(data) if isinstance(data, dict) else {}
+
+    async def _update_entry(self, data: dict) -> Any:
+        """ELI5: persist a new data dict onto the config entry."""
+        await self.hass.config_entries.async_update_entry(self._entry, data=data)
+        return self._entry
+
+    # ------------------------------------------------------------------
+    # Dashboard rendering (pure — no I/O, fully unit-testable)
+    # ------------------------------------------------------------------
+    def _render_chain(self, data: dict) -> str:
+        """ELI5: render the multi-hop chain in a single line.
+
+        ``source(s) → [canopy] → target(s)``. Multi-way sources are joined
+        with " + ", so a 3-way setup reads naturally.
+        """
+        def _label(item: Any) -> str:
+            if isinstance(item, dict):
+                return str(item.get("name") or item.get("device_id") or "?")
+            return str(item)
+        sources = data.get("sources") or []
+        targets = data.get("targets") or []
+        canopy = data.get("canopy") or None
+        source_text = " + ".join(_label(s) for s in sources) if sources else "(no source yet)"
+        target_text = " + ".join(_label(t) for t in targets) if targets else "(no target yet)"
+        chain = "{}  →  {}".format(source_text, target_text)
+        if canopy:
+            chain = "{}  →  {}  →  {}".format(source_text, _label(canopy), target_text)
+        return chain
+
+    def _render_dashboard(self, data: dict) -> str:
+        """ELI5: render the full dashboard description.
+
+        This is the markdown block that Home Assistant shows above the
+        action dropdown. It is written for a non-technical user: plain
+        language, no jargon, no raw bytes.
+        """
+        lines: list[str] = []
+        lines.append("## Current binding")
+        lines.append("")
+        lines.append("**Chain:**  {}".format(self._render_chain(data)))
+        lines.append("")
+        protocol = str(data.get("protocol") or "unknown").upper()
+        lines.append("**Protocol:**  {}".format(protocol))
+        if data.get("use_group"):
+            group_name = str(data.get("group_name") or "(unnamed group)")
+            lines.append("**Group:**  {}".format(group_name))
+        lines.append("")
+        rules = data.get("rules") or []
+        if rules:
+            lines.append("**Configured LEAT rules** ({}).".format(len(rules)))
+            lines.append("")
+            for i, rule in enumerate(rules, start=1):
+                lines.append("{}.  {}".format(i, _rule_eli5(rule)))
+            lines.append("")
+            lines.append("Raw (for reference):  ")
+            lines.append("")
+            for i, rule in enumerate(rules, start=1):
+                lines.append("{}.  gesture = {!r}, action = {!r}".format(
+                    i, rule.get("gesture", ""),
+                    {k: v for k, v in rule.items() if k != "gesture"},
+                ))
+        else:
+            lines.append("**No LEAT rules yet.** Use \"Add a new gesture rule\" below to give the first tap a meaning.")
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Step: dashboard (init)
+    # ------------------------------------------------------------------
+    async def async_step_init(self, user_input: dict | None = None):
+        """ELI5: the dashboard step — show the current state and actions.
+
+        ``user_input`` is ``None`` when the dialog is opened (no action
+        chosen yet) or a dict with the action the user selected in the
+        dropdown. Each action either navigates to a follow-up step or
+        mutates the config entry in place.
+        """
+        errors: dict[str, str] = {}
+        data = self._entry_data()
+
+        if user_input is not None:
+            action = str(user_input.get("action", "view") or "view")
+            if action == "add_rule":
+                return await self.async_step_add_rule(None)
+            if action == "delete_rule":
+                return await self.async_step_select_rule(None)
+            if action == "delete_binding":
+                return await self.async_step_delete_binding(None)
             if action == "erase_all":
                 compiler = self._compiler()
                 if compiler is None:
@@ -889,32 +1111,29 @@ class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
                 else:
                     try:
                         await compiler.async_erase_all()
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception:  # noqa: BLE001
                         errors["base"] = "erase_failed"
                         _LOGGER.exception("Options flow: erase_all failed")
-                        del exc
                     else:
-                        return self.async_create_entry(title="", data={
-                            "erase_result": "success",
-                        })
+                        return self.async_create_entry(title="", data={"erase_result": "success"})
             elif action == "recompile":
-                # ELI5: re-run the wizard so the user can tweak the
-                # behaviour and re-apply it.
                 return self.async_abort(reason="restart_wizard")
-
-        compiler = self._compiler()
-        bindings = []
-        if compiler is not None:
-            bindings = compiler.list_bindings()
+            else:
+                # Unknown action — fall through and show the dashboard
+                # with an honest error so the user can pick a real one.
+                errors["base"] = "unknown_action"
 
         schema = vol.Schema(
             {
-                vol.Required("action", default="list"): SelectSelector(
+                vol.Required("action", default="view"): SelectSelector(
                     SelectSelectorConfig(
                         options=[
-                            {"value": "list", "label": "View current bindings"},
-                            {"value": "erase_all", "label": "Erase ALL bindings"},
-                            {"value": "recompile", "label": "Edit (re-run wizard)"},
+                            {"value": "view", "label": "View current binding"},
+                            {"value": "add_rule", "label": "Add a new gesture rule"},
+                            {"value": "delete_rule", "label": "Delete a specific rule"},
+                            {"value": "delete_binding", "label": "Delete a specific source binding"},
+                            {"value": "erase_all", "label": "Erase ALL bindings (nuclear)"},
+                            {"value": "recompile", "label": "Re-run the wizard"},
                         ],
                         mode=SelectSelectorMode.DROPDOWN,
                     )
@@ -922,20 +1141,202 @@ class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
             }
         )
         return self.async_show_form(
-            step_id="init",
+            step_id="dashboard",
             data_schema=schema,
             errors=errors,
             description_placeholders={
-                "binding_count": str(len(bindings)),
-                "bindings": (
-                    "\n".join(
-                        "• {}  {} → {}".format(b.protocol, b.source_ieee, b.target_ieee)
-                        for b in bindings
-                    )
-                    if bindings
-                    else "(none)"
-                ),
+                "dashboard": self._render_dashboard(data),
             },
+        )
+
+    # ------------------------------------------------------------------
+    # Step: add a new gesture rule
+    # ------------------------------------------------------------------
+    def _target_capabilities(self, data: dict) -> set:
+        """ELI5: union of the capabilities of every selected target."""
+        caps: set = set()
+        for t in data.get("targets") or []:
+            kind = str(t.get("kind") if isinstance(t, dict) else "light")
+            caps |= TARGET_CAPABILITIES.get(kind, set())
+        return caps
+
+    def _add_rule_schema(self, caps: set) -> vol.Schema:
+        """ELI5: the add-rule form — a gesture picker, an optional time
+        window, and the action fields the target kind supports."""
+        fields: dict = {
+            vol.Required("gesture"): SelectSelector(
+                SelectSelectorConfig(
+                    options=[{"value": t, "label": t} for t in TRIGGER_OPTIONS],
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Optional("hour_start"): NumberSelector(
+                NumberSelectorConfig(min=0, max=23, step=1, unit_of_measurement="h")
+            ),
+            vol.Optional("hour_end"): NumberSelector(
+                NumberSelectorConfig(min=0, max=23, step=1, unit_of_measurement="h")
+            ),
+        }
+        if "brightness" in caps:
+            fields[vol.Optional("brightness", default=100)] = NumberSelector(
+                NumberSelectorConfig(min=0, max=255, step=1, unit_of_measurement="%")
+            )
+        if "color_temp" in caps:
+            fields[vol.Optional("color_temp_mireds")] = NumberSelector(
+                NumberSelectorConfig(min=153, max=500, step=1, unit_of_measurement="mireds")
+            )
+        if "transition" in caps:
+            fields[vol.Optional("transition_seconds")] = NumberSelector(
+                NumberSelectorConfig(min=0, max=60, step=1, unit_of_measurement="s")
+            )
+        if "speed" in caps:
+            fields[vol.Optional("fan_speed")] = NumberSelector(
+                NumberSelectorConfig(min=0, max=5, step=1)
+            )
+        if "open_close" in caps:
+            fields[vol.Optional("valve_open", default=True)] = bool
+        if "lock_unlock" in caps:
+            fields[vol.Optional("lock_unlock", default=False)] = bool
+        if "setpoint" in caps:
+            fields[vol.Optional("setpoint_c")] = NumberSelector(
+                NumberSelectorConfig(min=0, max=35, step=0.5, unit_of_measurement="°C")
+            )
+        return vol.Schema(fields)
+
+    async def async_step_add_rule(self, user_input: dict | None = None):
+        """ELI5: add a new gesture rule to the existing binding."""
+        errors: dict[str, str] = {}
+        data = self._entry_data()
+        caps = self._target_capabilities(data)
+
+        if user_input is not None:
+            gesture = str(user_input.get("gesture", "") or "").strip()
+            if not gesture:
+                errors["base"] = "gesture_required"
+            elif gesture not in _GESTURE_ELI5:
+                errors["base"] = "gesture_invalid"
+            else:
+                rule: dict[str, Any] = {"gesture": gesture}
+                hour_start = user_input.get("hour_start")
+                hour_end = user_input.get("hour_end")
+                if hour_start is not None and hour_end is not None:
+                    rule["hour_start"] = int(max(0, min(23, int(hour_start))))
+                    rule["hour_end"] = int(max(0, min(23, int(hour_end))))
+                if "brightness" in caps:
+                    rule["brightness"] = int(max(0, min(255, int(user_input.get("brightness", 100)))))
+                if "color_temp" in caps and user_input.get("color_temp_mireds") is not None:
+                    rule["color_temp_mireds"] = int(max(153, min(500, int(user_input["color_temp_mireds"]))))
+                if "transition" in caps and user_input.get("transition_seconds") is not None:
+                    rule["transition_seconds"] = int(max(0, min(60, int(user_input["transition_seconds"]))))
+                if "speed" in caps and user_input.get("fan_speed") is not None:
+                    rule["fan_speed"] = int(max(0, min(5, int(user_input["fan_speed"]))))
+                if "open_close" in caps:
+                    rule["valve_open"] = bool(user_input.get("valve_open", True))
+                if "lock_unlock" in caps:
+                    rule["lock_unlock"] = bool(user_input.get("lock_unlock", False))
+                if "setpoint" in caps and user_input.get("setpoint_c") is not None:
+                    rule["setpoint_c"] = float(user_input["setpoint_c"])
+                new_rules = list(data.get("rules") or [])
+                new_rules.append(rule)
+                new_data = dict(data)
+                new_data["rules"] = new_rules
+                await self._update_entry(new_data)
+                return await self.async_step_init(None)
+
+        return self.async_show_form(
+            step_id="add_rule",
+            data_schema=self._add_rule_schema(caps),
+            errors=errors,
+            description_placeholders={
+                "target_count": str(len(data.get("targets") or [])),
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Step: select + delete a specific rule
+    # ------------------------------------------------------------------
+    async def async_step_select_rule(self, user_input: dict | None = None):
+        """ELI5: show the list of rules so the user can pick one to delete."""
+        errors: dict[str, str] = {}
+        data = self._entry_data()
+        rules = data.get("rules") or []
+        if user_input is not None:
+            rule_index = str(user_input.get("rule_index", "") or "")
+            if not rule_index.isdigit():
+                errors["base"] = "rule_index_required"
+            else:
+                idx = int(rule_index)
+                if 0 <= idx < len(rules):
+                    new_rules = list(rules)
+                    del new_rules[idx]
+                    new_data = dict(data)
+                    new_data["rules"] = new_rules
+                    await self._update_entry(new_data)
+                    return await self.async_step_init(None)
+                errors["base"] = "rule_index_out_of_range"
+        options = []
+        for i, rule in enumerate(rules):
+            options.append({
+                "value": str(i),
+                "label": "{}.  {}".format(i + 1, _rule_eli5(rule)),
+            })
+        if not options:
+            options.append({"value": "0", "label": "(no rules to delete)"})
+        return self.async_show_form(
+            step_id="select_rule",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("rule_index", default="0"): SelectSelector(
+                        SelectSelectorConfig(options=options, mode=SelectSelectorMode.DROPDOWN)
+                    ),
+                }
+            ),
+            errors=errors,
+        )
+
+    # ------------------------------------------------------------------
+    # Step: delete a specific source binding
+    # ------------------------------------------------------------------
+    async def async_step_delete_binding(self, user_input: dict | None = None):
+        """ELI5: delete one of the multi-way source bindings."""
+        errors: dict[str, str] = {}
+        data = self._entry_data()
+        sources = data.get("sources") or []
+
+        def _label(item: Any) -> str:
+            if isinstance(item, dict):
+                return str(item.get("name") or item.get("device_id") or "?")
+            return str(item)
+
+        if user_input is not None:
+            source_index = str(user_input.get("source_index", "") or "")
+            if not source_index.isdigit():
+                errors["base"] = "source_index_required"
+            else:
+                idx = int(source_index)
+                if 0 <= idx < len(sources):
+                    new_sources = list(sources)
+                    del new_sources[idx]
+                    new_data = dict(data)
+                    new_data["sources"] = new_sources
+                    await self._update_entry(new_data)
+                    return await self.async_step_init(None)
+                errors["base"] = "source_index_out_of_range"
+        options = []
+        for i, src in enumerate(sources):
+            options.append({"value": str(i), "label": "{}.  {}".format(i + 1, _label(src))})
+        if not options:
+            options.append({"value": "0", "label": "(no source bindings to delete)"})
+        return self.async_show_form(
+            step_id="delete_binding",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("source_index", default="0"): SelectSelector(
+                        SelectSelectorConfig(options=options, mode=SelectSelectorMode.DROPDOWN)
+                    ),
+                }
+            ),
+            errors=errors,
         )
 
 

@@ -2,27 +2,29 @@
   "config": {
     "step": {
       "user": {
-        "title": "SHiP Anchor — Step 1 of 4: Target",
-        "description": "Target-first: start with what you want to CONTROL. Pick the light(s), fan, valve, lock or shade the switch should act on. SHiP Anchor detects the protocol automatically."
+        "title": "SHiP Anchor — Step 1 of 5: Direction",
+        "description": "SHiP Anchor now lets you start from EITHER end. Pick the device you already know about — the thing you want to CONTROL (a light, fan, valve, lock), or the switch/button you want to USE. The wizard then walks you to the other end and (optionally) through an intermediate canopy module."
+      },
+      "source": {
+        "title": "SHiP Anchor — Step 2 of 5: Source",
+        "description": "Pick the switch(es) / button(s) — {count} compatible device(s) speak the {protocol} protocol. Pick one, or several for a multi-way (3-way) setup.",
+        "data": {
+          "sources": "Source device(s)",
+          "use_group": "Use a group (recommended for 3+ targets)",
+          "group_name": "Group name (optional)"
+        }
       },
       "target": {
-        "title": "SHiP Anchor — Step 1 of 4: Target",
-        "description": "Which light(s), fan, valve, lock or shade should the switch(es) control? Pick one or more. 3+ targets automatically use a group binding.",
+        "title": "SHiP Anchor — Step 2 of 5: Target",
+        "description": "Pick the light(s), fan, valve, lock or shade you want to CONTROL — {count} compatible device(s) speak the {protocol} protocol. 3+ targets automatically use a group binding.",
         "data": {
           "targets": "Target device(s)",
           "use_group": "Use a group (recommended for 3+ targets)",
           "group_name": "Group name (optional)"
         }
       },
-      "source": {
-        "title": "SHiP Anchor — Step 2 of 4: Source",
-        "description": "Now pick the switch(es) that will control them — {source_count} compatible device(s) speak the same protocol ({protocol}) as your target. Pick one, or several for a multi-way (3-way) setup.",
-        "data": {
-          "sources": "Source switch(es) — same protocol only"
-        }
-      },
       "behavior": {
-        "title": "SHiP Anchor — Step 3 of 4: Behaviour",
+        "title": "SHiP Anchor — Step 3 of 5: Behaviour",
         "description": "Build the rule sheet: for each tap/hold pick a gesture, an optional time window (start → end hour), and the action {target_count} target(s) should take. These become LEAT rows on the hardware, so they keep working with the hub offline.",
         "data": {
           "rule1_gesture": "Rule 1 — gesture",
@@ -67,8 +69,15 @@
           "rule4_setpoint_c": "Rule 4 — setpoint °C (optional)"
         }
       },
+      "canopy": {
+        "title": "SHiP Anchor — Step 4 of 5: Intermediate Module (optional)",
+        "description": "If the signal passes through a ceiling canopy, relay box, or mesh repeater before reaching the load, pick it here and SHiP Anchor will build a two-hop chain:  source → canopy → target.  Leave empty for a direct one-hop binding. {canopy_count} compatible device(s) speak the {protocol} protocol.",
+        "data": {
+          "canopy": "Intermediate canopy / relay (optional)"
+        }
+      },
       "finish": {
-        "title": "SHiP Anchor — Step 4 of 4: Preview or Apply",
+        "title": "SHiP Anchor — Step 5 of 5: Preview or Apply",
         "description": "Review: {source} → {target_count} target(s) over {protocol}. Dry-run previews the payloads and LEAT rows in your log without touching any hardware.",
         "data": {
           "dry_run": "Dry run (preview only, do not send to devices)"
@@ -76,6 +85,8 @@
       }
     },
     "error": {
+      "direction_required": "Pick a direction — start from the thing you want to control, or from the switch/button you want to use.",
+      "canopy_not_found": "That canopy device is no longer in your device registry. Please pick another one, or leave the field empty for a direct binding.",
       "source_not_found": "That source device is no longer in your device registry. Please pick another one.",
       "source_required": "Pick at least one source switch. If none are listed, your source and target may speak different protocols.",
       "target_required": "Pick at least one target device, or enable 'Use a group' and give the group a name.",
@@ -88,17 +99,54 @@
   },
   "options": {
     "step": {
-      "init": {
-        "title": "SHiP Anchor — Manage Bindings",
-        "description": "You currently have {binding_count} offline binding(s) baked in:\n\n{bindings}\n\nChoose what to do next.",
+      "dashboard": {
+        "title": "SHiP Anchor — Visual LEAT & Multi-Hop Inspector",
+        "description": "{dashboard}\n\n---\n\nChoose an action below to inspect or manage this binding.",
         "data": {
           "action": "Action"
+        }
+      },
+      "add_rule": {
+        "title": "SHiP Anchor — Add a Gesture Rule",
+        "description": "Give the next tap or hold a meaning. The rule is stored on the hardware as a LEAT row, so it keeps working with the hub offline. {target_count} target(s) will act on it.",
+        "data": {
+          "gesture": "Gesture (1x–5x tap or Hold)",
+          "hour_start": "Active from (hour 0–23, optional)",
+          "hour_end": "Active until (hour 0–23, optional)",
+          "brightness": "Brightness (0–255)",
+          "color_temp_mireds": "Colour temp mireds (153 warm → 500 cool, optional)",
+          "transition_seconds": "Fade time (seconds, optional)",
+          "fan_speed": "Fan speed (0–5, optional)",
+          "valve_open": "Open valve (false = close)",
+          "lock_unlock": "Unlock (false = lock)",
+          "setpoint_c": "Setpoint °C (optional)"
+        }
+      },
+      "select_rule": {
+        "title": "SHiP Anchor — Delete a Rule",
+        "description": "Pick the rule you want to remove. It will be taken out of the binding's rule sheet.",
+        "data": {
+          "rule_index": "Rule to delete"
+        }
+      },
+      "delete_binding": {
+        "title": "SHiP Anchor — Delete a Source Binding",
+        "description": "Pick one of the multi-way source switches to remove from this binding. The rest of the chain stays intact.",
+        "data": {
+          "source_index": "Source to delete"
         }
       }
     },
     "error": {
       "no_runtime": "The SHiP Anchor runtime is not loaded. Restart Home Assistant and try again.",
-      "erase_failed": "Erase failed. Check the system log for details."
+      "erase_failed": "Erase failed. Check the system log for details.",
+      "unknown_action": "That action is not recognised. Pick one of the listed options.",
+      "gesture_required": "Pick a gesture (1x–5x tap or Hold) to add the rule.",
+      "gesture_invalid": "That gesture is not supported. Choose 1x–5x Tap or Hold.",
+      "rule_index_required": "Pick which rule to delete.",
+      "rule_index_out_of_range": "That rule no longer exists. Go back and pick one of the listed rules.",
+      "source_index_required": "Pick which source binding to delete.",
+      "source_index_out_of_range": "That source no longer exists. Go back and pick one of the listed sources."
     }
   }
 }

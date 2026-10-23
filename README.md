@@ -32,6 +32,7 @@ Think of it like programming your TV remote to also work with the neighbours' TV
 - **Multi-way switch offline sync** — N switches + shared bulbs stay in exact sync via one SHiP Group ID broadcast channel, with the `NoStatusShare` gesture (`0x8`) suppressing status echo loops — no hub, router, or cloud in the path
 - **Bidirectional wizard** — start from either the source switch or the target load; the other end is protocol-filtered so cross-bus pairings are impossible (v0.1.14)
 - **Multi-hop canopy routing** — chain-like `switch → canopy/relay → load` bindings for physical power-gating ceiling canopies (v0.1.14); a broadcast-like multicast group mesh is the roadmap step
+- **Visual LEAT & Multi-Hop Inspector** — a dashboard in the Home Assistant options dialog that renders the whole binding (chain + protocol + every LEAT rule) in plain English, and lets you add or delete a rule or a source binding without touching JSON (v0.1.15)
 - **Zigbee** (ZHA & Zigbee2MQTT) — direct device-to-device binding with auto-discovery of vendor quirks (Inovelli, Aqara, Tuya, Philips Hue, SONOFF)
 - **Matter 1.3–1.6** — two-step ACL + Binding table writes via `matterjs-server` WebSocket API
 - **Z-Wave 700/800** — Association Group programming via `zwave_js` (with ZWLR guard)
