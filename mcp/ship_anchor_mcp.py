@@ -10,7 +10,10 @@ available without making the assistant read every project file.
 
 LAYER 2 — THE UNDER-THE-HOOD IMPLEMENTATION
 Python 3.9+, standard library only. The server speaks newline-delimited
-JSON-RPC over stdio, exposes five MCP tools, and includes CLI and demo modes.
+JSON-RPC over stdio, exposes seven MCP tools (device inspection, binding
+preview, LEAT behaviour baking, binding inventory, 19-byte encode/decode, and
+the verification suite), and includes CLI and demo modes. Every tool is
+preview-only — none of them actuate real devices.
 """
 
 from __future__ import annotations
@@ -60,6 +63,26 @@ TOOL_DEFINITIONS = [
                 "dry_run": {"type": "boolean", "default": True},
             },
             "required": ["protocol", "config_dict"],
+        },
+    },
+    {
+        "name": "ship_bake_behavior",
+        "description": "Compile gesture + time-window rules into LEAT rows (matches C ship_leat_entry_t). Preview only, never actuates.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "group_id": {"type": "integer", "minimum": 0, "maximum": 255},
+                "rules": {"type": "array", "items": {"type": "object"}},
+            },
+            "required": ["rules"],
+        },
+    },
+    {
+        "name": "ship_list_bindings",
+        "description": "Normalize a stored bindings list into an inventory (count + per-protocol). Read-only.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"bindings": {"type": "array", "items": {"type": "object"}}},
         },
     },
     {
@@ -176,6 +199,49 @@ async def _call_tool(name: str, arguments: dict) -> Any:
         )
         return asdict(result)
 
+    if name == "ship_bake_behavior":
+        # ELI5: turn the wizard's "rule sheets" (a tap count / hold, an
+        # optional time-of-day window, and action parameters) into the exact
+        # LEAT rows the C core stores on hardware. This is a pure preview —
+        # it only builds rows, it never touches a device.
+        from custom_components.ship_anchor.compiler import AnchorCompiler
+
+        rules = arguments.get("rules") or []
+        if not isinstance(rules, list):
+            raise ValueError("rules must be an array of rule objects")
+        group_id = int(arguments.get("group_id", 0))
+        table = AnchorCompiler(None, None, {}).build_leat_table(rules, group_id)
+        return {
+            "eli5_summary": (
+                "Baked {} rule(s) into {} LEAT row(s) on group {}."
+            ).format(len(rules), len(table), group_id),
+            "row_count": len(table),
+            "leat_rows": table,
+        }
+
+    if name == "ship_list_bindings":
+        # ELI5: given the raw rows an agent read from
+        # .storage/ship_anchor.bindings, return a tidy inventory: how many
+        # bindings, broken down by protocol, plus the normalised records.
+        from custom_components.ship_anchor.compiler import AnchorCompiler
+
+        bindings = arguments.get("bindings") or []
+        if not isinstance(bindings, list):
+            raise ValueError("bindings must be an array of stored rows")
+        compiler = AnchorCompiler(None, None, {"bindings": bindings})
+        records = compiler.list_bindings()
+        by_protocol: dict[str, int] = {}
+        for record in records:
+            by_protocol[record.protocol] = by_protocol.get(record.protocol, 0) + 1
+        return {
+            "eli5_summary": "{} binding(s) stored across {} protocol(s).".format(
+                len(records), len(by_protocol)
+            ),
+            "count": len(records),
+            "by_protocol": by_protocol,
+            "bindings": [asdict(record) for record in records],
+        }
+
     if name == "ship_encode_19b_frame":
         return ship_encode_19b_frame(arguments)
 
@@ -270,6 +336,21 @@ async def _run_demo() -> dict:
                 },
             },
         }),
+        ("ship_bake_behavior", {
+            "group_id": 42,
+            "rules": [
+                {"gesture": "1x Tap", "brightness": 100, "color_temp_mireds": 350},
+                {"gesture": "5x Tap", "hour_start": 22, "hour_end": 6, "brightness": 15},
+            ],
+        }),
+        ("ship_list_bindings", {
+            "bindings": [
+                {"protocol": "zigbee_zha", "source_ieee": "aa", "target_ieee": "group",
+                 "clusters": [6, 8], "group_id": 42, "preflight_done": True},
+                {"protocol": "shelly", "source_ieee": "192.0.2.10", "target_ieee": "192.0.2.11",
+                 "clusters": [], "group_id": None, "preflight_done": True},
+            ],
+        }),
         ("ship_encode_19b_frame", frame_args),
         ("ship_decode_verify_19b_frame", {
             "frame_hex": encoded["frame_hex"],
@@ -304,7 +385,7 @@ async def _dispatch(request: dict) -> Optional[dict]:
             "result": {
                 "protocolVersion": params.get("protocolVersion", "2024-11-05"),
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "ship-anchor", "version": "0.1.0"},
+                "serverInfo": {"name": "ship-anchor", "version": "0.1.12"},
             },
         }
     if method == "ping":

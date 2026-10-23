@@ -41,8 +41,8 @@ THE SIX DRILLS:
     Compare Matter and SHiP unicast sweeps with a one-frame SHiP group broadcast.
 
   DRILL 6 — MCP SERVER:
-    Exercise all five MCP tools, including the verification-suite tool, and
-    check the compact schema stays below 1,000 lexical tokens.
+    Exercise all seven MCP tools, including the verification-suite tool, and
+    check the compact schema stays below its lexical-token ceiling.
 
 ============================================================================
 
@@ -912,7 +912,7 @@ def drill_5_scene_storm() -> TestResult:
 # DRILL 6 — MCP Server Tool Verification
 # ===========================================================================
 def drill_6_mcp_server() -> TestResult:
-    """Link-check the ESPHome component and exercise all five MCP tools."""
+    """Link-check the ESPHome component and exercise all MCP tools."""
     print_header("DRILL 6 — ESPHome Seam & MCP Server Verification")
     compile_check = subprocess.run(
         [sys.executable, os.path.join(REPO_ROOT, "sim", "check_ship_fastpath_compile.py")],
@@ -961,10 +961,17 @@ def drill_6_mcp_server() -> TestResult:
     expected_tools = {
         "ship_inspect_device",
         "ship_compile_binding",
+        "ship_bake_behavior",
+        "ship_list_bindings",
         "ship_encode_19b_frame",
         "ship_decode_verify_19b_frame",
         "ship_run_verification_suite",
     }
+    # ELI5: the schema has a size guard so an accidental bloat is caught.
+    # v0.1.11 added two tools (ship_bake_behavior, ship_list_bindings), so
+    # the ceiling moved from 1,000 to 1,500 lexical tokens. This is a
+    # tripwire, not a protocol requirement.
+    token_ceiling = 1500
     token_count = report.get("schema_token_count", 0)
     inspected = tools.get("ship_inspect_device", {})
     compiled = tools.get("ship_compile_binding", {})
@@ -974,11 +981,13 @@ def drill_6_mcp_server() -> TestResult:
     ]
     encoded = tools.get("ship_encode_19b_frame", {})
     decoded = tools.get("ship_decode_verify_19b_frame", {})
+    baked = tools.get("ship_bake_behavior", {})
+    listed = tools.get("ship_list_bindings", {})
     rtc_round_trip = report.get("mesh_rtc_round_trip", {})
     suite = tools.get("ship_run_verification_suite", {})
     passed = (
         set(tools) == expected_tools
-        and token_count < 1000
+        and token_count < token_ceiling
         and inspected.get("requires_group_binding") is True
         and len(group_steps) == 4
         and encoded.get("length") == 19
@@ -986,17 +995,22 @@ def drill_6_mcp_server() -> TestResult:
         and rtc_round_trip.get("valid") is True
         and rtc_round_trip.get("decoded", {}).get("utc_epoch") == 1700000000
         and suite.get("passed") is True
+        and baked.get("row_count", 0) >= 1
+        and listed.get("count", 0) >= 1
     )
     details = [
         ok("ship_fastpath.cpp compiled and linked with protocol + HAL")
         if compile_check.returncode == 0 else fail("ESPHome seam compile/link failed"),
-        ok("All five MCP tools returned results") if set(tools) == expected_tools
+        ok("All MCP tools returned results") if set(tools) == expected_tools
         else fail("One or more MCP tools did not return results"),
-        ok("Tool schema lexical token count: {}".format(token_count))
-        if token_count < 1000 else fail("Tool schema exceeds 1,000 lexical tokens"),
+        ok("Tool schema lexical token count: {} (< {})".format(token_count, token_ceiling))
+        if token_count < token_ceiling else fail("Tool schema exceeds {} lexical tokens".format(token_ceiling)),
         ok("Inspection and compiler group provisioning verified")
         if inspected.get("requires_group_binding") is True and len(group_steps) == 4
         else fail("Inspection or target group provisioning failed"),
+        ok("Bake-behaviour and list-bindings tools verified")
+        if baked.get("row_count", 0) >= 1 and listed.get("count", 0) >= 1
+        else fail("Bake-behaviour or list-bindings tool failed"),
         ok("19-byte encode/decode and verification-suite tool passed")
         if encoded.get("length") == 19 and decoded.get("valid") is True
         and rtc_round_trip.get("decoded", {}).get("utc_epoch") == 1700000000

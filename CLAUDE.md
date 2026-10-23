@@ -67,6 +67,35 @@ about what is simulated versus measured on real hardware.
    no Wi-Fi PHY), or run concurrent `wifi:` and `zigbee: router: true` on
    `ESP32-C6` (shared RF-switch instability).
 
+### v0.1.11 — Target-First Wizard & LEAT Rule Compiler
+
+- **Wizard order is target-first** (`custom_components/ship_anchor/config_flow.py`):
+  `target` → `source` → `behavior` → `finish`. The target's protocol anchors the
+  whole flow; the source step lists **only** switches that share that protocol.
+- **Cross-protocol guardrails:** `_infer_protocol(device)` derives a protocol from
+  identifier namespaces / model strings; `_target_kind(device, entity_reg)`
+  classifies the target (light/fan/valve/lock/cover/climate); and
+  `_device_protocols_match(a, b)` is the safety guard — it treats ZHA and
+  Zigbee2MQTT as the same Zigbee family but **rejects** e.g. Zigbee↔Z-Wave or
+  Matter↔Shelly, so a source can never be paired to a target it cannot reach.
+- **Dynamic behaviour:** `TARGET_CAPABILITIES` maps each target kind to the
+  action parameters its form may show (lights → brightness/colour/transition;
+  fans → speed; valves → open/close; locks → lock/unlock; climate → setpoint).
+  Each rule collects a gesture (1x–5x Tap, Hold) plus an optional time-of-day
+  window (`hour_start`, `hour_end`, overnight-aware).
+- **LEAT compiler mapping:** `AnchorCompiler.build_leat_table(rules, group_id)`
+  turns each rule into a row that matches the C struct `ship_leat_entry_t`
+  (`src/ship_core/ship_protocol.h`) field-for-field: `{group_id, domain,
+  gesture, action_type, action_param, hour_start, hour_end, enabled}`. Do NOT
+  invent `param_2`/`param_3` fields on the LEAT row — the C struct has a single
+  `action_param` byte. Values that need more than a byte (colour temperature in
+  mireds is 153–500, fade time) ride in an optional `frame_params` annotation
+  consumed by the 19-byte frame encoder, keeping the struct honest.
+- **MCP surface is seven tools** (all preview-only, never actuating):
+  `ship_inspect_device`, `ship_compile_binding`, `ship_bake_behavior` (LEAT),
+  `ship_list_bindings` (inventory), `ship_encode_19b_frame`,
+  `ship_decode_verify_19b_frame`, and `ship_run_verification_suite`.
+
 ### Repository map
 
 | Path | Purpose |
@@ -77,11 +106,13 @@ about what is simulated versus measured on real hardware.
 | `src/ship_core/ship_protocol.h` | Frame layout, enums, protocol and HAL APIs |
 | `src/ship_core/ship_protocol.c` | SipHash, frame encode/decode, LEAT, Mesh-RTC |
 | `src/ship_core/ship_radio_hal.c` | ESP-IDF, Nordic, OpenThread, native radio paths |
-| `custom_components/ship_anchor/compiler.py` | Automation parser and multi-protocol binding compiler |
+| `custom_components/ship_anchor/compiler.py` | Automation parser, multi-protocol binding compiler, and LEAT rule compiler |
 | `custom_components/ship_anchor/quirks_inspector.py` | Zigbee endpoint, preflight, and group inspection |
 | `custom_components/ship_anchor/__init__.py` | Home Assistant integration setup and services |
+| `custom_components/ship_anchor/config_flow.py` | Target-first wizard (target → source → behavior → finish) and options flow |
+| `custom_components/ship_anchor/automation.py` | HA automation normalization + entity-registry protocol fallback |
 | `custom_components/ship_anchor/manifest.json` | Home Assistant integration metadata |
-| `mcp/ship_anchor_mcp.py` | Five-tool MCP stdio server, CLI, and demo |
+| `mcp/ship_anchor_mcp.py` | Seven-tool MCP stdio server (inspect, compile, bake LEAT, list bindings, encode/decode, verify), CLI, and demo |
 | `sim/test_ship_core.c` | C protocol, clock round-trip, and native HAL tests |
 | `sim/check_ship_fastpath_compile.py` | Host-side ESPHome component compile/link smoke test |
 | `sim/run_anchor_benchmarks.py` | Six Python verification and disaster drills |
@@ -107,5 +138,7 @@ python3 mcp/ship_anchor_mcp.py --demo
 
 Use `python3 sim/run_anchor_benchmarks.py --skip-mcp` for the C suite and
 Drills 1–5 without starting the MCP demo. The MCP schema check reports an exact
-lexical-token count over compact JSON; model-specific tokenizers can count
-different units.
+lexical-token count over compact JSON against a tripwire ceiling (currently
+1,500; raised from 1,000 in v0.1.11 when two tools were added); model-specific
+tokenizers can count different units. Drill 6 asserts the full seven-tool
+surface and exercises `ship_bake_behavior` and `ship_list_bindings`.

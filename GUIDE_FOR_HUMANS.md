@@ -478,7 +478,7 @@ DevGroupSend 129=@|18
 | [`custom_components/ship_anchor/__init__.py`](custom_components/ship_anchor/__init__.py) | The "front door" — loads the integration, registers `compile` and `erase` services |
 | [`custom_components/ship_anchor/quirks_inspector.py`](custom_components/ship_anchor/quirks_inspector.py) | The "device translator" — finds correct endpoints, modes, and pre-flight attribute writes for each device |
 | [`custom_components/ship_anchor/compiler.py`](custom_components/ship_anchor/compiler.py) | The "offline programmer" — normalizes automations and creates binding payloads |
-| [`mcp/ship_anchor_mcp.py`](mcp/ship_anchor_mcp.py) | The "AI adapter" — five MCP tools, stdio JSON-RPC, CLI, and demo mode |
+| [`mcp/ship_anchor_mcp.py`](mcp/ship_anchor_mcp.py) | The "AI adapter" — seven MCP tools (inspect, compile, bake LEAT, list bindings, encode/decode, verify), stdio JSON-RPC, CLI, and demo mode |
 | [`sim/test_ship_core.c`](sim/test_ship_core.c) | The "flight simulator" — 10 C unit tests covering the protocol and native HAL |
 | [`sim/check_ship_fastpath_compile.py`](sim/check_ship_fastpath_compile.py) | A host-side C++ compile/link check for the ESPHome component and SHiP core |
 | [`sim/run_anchor_benchmarks.py`](sim/run_anchor_benchmarks.py) | The "fire drill coordinator" — six disaster scenarios and benchmark comparisons |
@@ -627,14 +627,19 @@ Binding is preview-only through MCP; it does not send commands to real devices.
 ### Layer 2 — The Engineering Ground Truth
 
 The server uses only the Python 3.9+ standard library and exposes these tools:
-`ship_inspect_device`, `ship_compile_binding`, `ship_encode_19b_frame`,
-`ship_decode_verify_19b_frame`, and `ship_run_verification_suite`.
+`ship_inspect_device`, `ship_compile_binding`, `ship_bake_behavior`,
+`ship_list_bindings`, `ship_encode_19b_frame`, `ship_decode_verify_19b_frame`,
+and `ship_run_verification_suite`.
+
+- `ship_bake_behavior` — turn gesture + time-window rules into LEAT rows
+  (matches the C `ship_leat_entry_t` struct).
+- `ship_list_bindings` — summarise a stored bindings list into an inventory.
 
 ```bash
 # Start a stdio MCP server for a compatible client
 python3 mcp/ship_anchor_mcp.py
 
-# List the compact schemas or try all five tools locally
+# List the compact schemas or try all seven tools locally
 python3 mcp/ship_anchor_mcp.py --cli
 python3 mcp/ship_anchor_mcp.py --demo
 ```

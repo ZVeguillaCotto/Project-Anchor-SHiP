@@ -150,7 +150,7 @@ FINAL REPORT:
   ✓  Drill 3: Water Leak Reflex (~0.88 ms modeled estimate)
   ✓  Drill 4: 5×-Click Scene + 2:00 AM Mesh-RTC Nightlight
   ✓  Drill 5: 30-Device Storm & 50-Node Recovery
-  ✓  Drill 6: Five MCP tools and <1,000 lexical schema tokens
+  ✓  Drill 6: Seven MCP tools and <1,500 lexical schema tokens
 
   ALL 6/6 DRILLS PASSED ✓
   Simulation checks passed — real Home Assistant and hardware validation remain.
@@ -184,10 +184,13 @@ project-anchor-ship/
 │   └── ship_anchor/
 │       ├── manifest.json                         ← HA integration manifest
 │       ├── __init__.py                           ← Persistent Store + service registration
+│       ├── config_flow.py                        ← Target-first wizard + options flow
+│       ├── automation.py                         ← HA automation normalization
 │       ├── quirks_inspector.py                   ← Live zigpy + static quirks DB
-│       └── compiler.py                           ← Multi-protocol Offline Compiler
+│       ├── strings.json                          ← Localised wizard strings (ELI5)
+│       └── compiler.py                           ← Multi-protocol Compiler + LEAT builder
 ├── mcp/
-│   └── ship_anchor_mcp.py                        ← Five-tool stdio MCP server + CLI
+│   └── ship_anchor_mcp.py                        ← Seven-tool stdio MCP server + CLI
 └── sim/
     ├── test_ship_core.c                          ← 10 C unit tests (gcc/clang)
     ├── check_ship_fastpath_compile.py            ← ESPHome C++ protocol/HAL link check
@@ -249,20 +252,23 @@ python3 sim/check_ship_fastpath_compile.py
 ### Model Context Protocol (MCP)
 
 The dependency-free Python 3.9+ server exposes device inspection, binding
-preview, 19-byte frame encoding/verification, and the full verification suite.
-MCP clients launch it as a stdio process:
+preview, LEAT behaviour baking, binding inventory, 19-byte frame
+encoding/verification, and the full verification suite. MCP clients launch it
+as a stdio process:
 
 ```bash
 python3 mcp/ship_anchor_mcp.py
 ```
 
 For local smoke tests, list the compact tool schemas, call one tool, or exercise
-all five tools (including the nested verification-suite run):
+all seven tools (including the nested verification-suite run):
 
 ```bash
 python3 mcp/ship_anchor_mcp.py --cli
 python3 mcp/ship_anchor_mcp.py --cli ship_inspect_device \
   --args '{"ieee":"00:0d:6f:00:05:7d:2d:34","model":"VZM31-SN","manufacturer":"Inovelli"}'
+python3 mcp/ship_anchor_mcp.py --cli ship_bake_behavior \
+  --args '{"group_id":42,"rules":[{"gesture":"1x Tap","brightness":100,"color_temp_mireds":350},{"gesture":"5x Tap","hour_start":22,"hour_end":6,"brightness":15}]}'
 python3 mcp/ship_anchor_mcp.py --demo
 ```
 
