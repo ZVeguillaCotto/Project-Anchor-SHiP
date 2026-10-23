@@ -80,6 +80,19 @@ TRIGGER_OPTIONS = [
     "1x Tap", "2x Tap", "3x Tap", "4x Tap", "5x Tap", "Hold",
 ]
 
+# ELI5: each *kind* of target supports different action parameters. A light
+# gets brightness and colour temperature; a fan gets speed; a valve gets
+# open/close; a lock gets lock/unlock. The wizard only shows fields the
+# selected target(s) actually support.
+TARGET_CAPABILITIES = {
+    "light": {"brightness", "color_temp", "transition"},
+    "fan":   {"speed", "transition"},
+    "valve": {"open_close"},
+    "lock":  {"lock_unlock"},
+    "cover": {"open_close", "transition"},
+    "climate": {"setpoint"},
+}
+
 
 def _device_id(device: Any) -> str:
     return str(getattr(device, "id", ""))
@@ -147,75 +160,71 @@ def _infer_protocol(device: Any) -> Protocol:
     return Protocol.UNKNOWN
 
 
+def _target_kind(device: Any, entity_reg: Any) -> str:
+    """
+    ELI5: work out WHAT KIND of target a device is (light, fan, valve,
+    lock, ...) so the behaviour step can show only the fields that device
+    can actually act on. We look at the entity domains attached to the
+    device first, then fall back to keywords in its model string.
+    """
+    if entity_reg is not None:
+        for entity in entity_reg.entities.values():
+            if getattr(entity, "device_id", None) != _device_id(device):
+                continue
+            domain = str(getattr(entity, "platform", "") or "")
+            if domain in TARGET_CAPABILITIES:
+                return domain
+    sig = "{} {}".format(_device_manufacturer(device), _device_model(device)).lower()
+    for kind, keywords in (
+        ("light", ("bulb", "light", "lca", "lta", "ltl")),
+        ("fan", ("fan",)),
+        ("valve", ("valve", "moisture", "leak")),
+        ("lock", ("lock", "deadbolt")),
+        ("cover", ("shade", "cover", "blind", "roller")),
+        ("climate", ("thermostat", "climate", "climate")),
+    ):
+        if any(k in sig for k in keywords):
+            return kind
+    return "light"
+
+
+def _device_protocols_match(a: Protocol, b: Protocol) -> bool:
+    """
+    ELI5: two devices "match" when they speak the same protocol, so a
+    Zigbee switch can be paired with a Zigbee light but never with a Z-Wave
+    lock (which would silently do nothing). ZHA and Zigbee2MQTT are both
+    Zigbee, so they cross-match — that is intentional.
+    """
+    zigbee = {Protocol.ZIGBEE_ZHA, Protocol.ZIGBEE_Z2M}
+    if a in zigbee and b in zigbee:
+        return True
+    return a == b
+
+
 class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Interactive wizard that builds one offline binding per config entry."""
 
     VERSION = 1
 
     # ------------------------------------------------------------------
-    # Step 1 — pick the SOURCE device
+    # Step 1 — pick the TARGET device(s)  (target-first workflow)
+    # ELI5: we start with what the user WANTS TO CONTROL (the light, valve,
+    # lock, fan), not with the switch. That way SHiP Anchor can immediately
+    # detect the protocol (Zigbee, Matter, Z-Wave, Shelly, Tasmota) and
+    # later only offer switches that speak the same protocol.
     # ------------------------------------------------------------------
     async def async_step_user(self, user_input: dict | None = None):
-        """
-        ELI5: show the user a dropdown of every switch / button / dimmer
-        in their home and let them pick the one they want to anchor.
-        """
-        errors: dict[str, str] = {}
+        """ELI5: entry point — jump straight to the target picker."""
+        return await self.async_step_target(user_input)
 
-        if user_input is not None:
-            source_device_id = str(user_input.get("source_device", ""))
-            device_reg = dr.async_get(self.hass)
-            source = device_reg.async_get(source_device_id)
-            if source is None:
-                errors["base"] = "source_not_found"
-            else:
-                self._input = {  # type: ignore[attr-defined]
-                    "source_device_id": source_device_id,
-                    "source_name": _device_name(source),
-                    "source_manufacturer": _device_manufacturer(source),
-                    "source_model": _device_model(source),
-                    "source_ieee": _device_ieee(source),
-                    "protocol": _infer_protocol(source).name,
-                }
-                return await self.async_step_target()
-        else:
-            device_reg = dr.async_get(self.hass)
-            entity_reg = er.async_get(self.hass)
-            sources = self._candidate_sources(device_reg, entity_reg)
-            if not sources:
-                sources = [
-                    (dev.id, _device_name(dev)) for dev in device_reg.devices.values()
-                ]
-            schema = vol.Schema(
-                {
-                    vol.Required("source_device"): SelectSelector(
-                        SelectSelectorConfig(
-                            options=[
-                                {"value": dev_id, "label": name}
-                                for dev_id, name in sources
-                            ],
-                            mode=SelectSelectorMode.DROPDOWN,
-                        )
-                    )
-                }
-            )
-            return self.async_show_form(
-                step_id="user",
-                data_schema=schema,
-                errors=errors,
-                description_placeholders={"mode": "pick the source"},
-            )
-
-    # ------------------------------------------------------------------
-    # Step 2 — pick the TARGET device(s)
-    # ------------------------------------------------------------------
     async def async_step_target(self, user_input: dict | None = None):
         """
-        ELI5: let the user choose one or more lights / valves / locks that
-        the source should control, plus an optional ZCL group name.
+        ELI5: let the user choose one or more lights / valves / locks /
+        fans that the switch(es) should control. SHiP Anchor detects each
+        target's protocol and kind, and automatically escalates to a group
+        binding if more than two targets are chosen (anti-popcorn rule).
         """
         errors: dict[str, str] = {}
-        inp = self._input  # type: ignore[attr-defined]
 
         if user_input is not None:
             raw_targets = user_input.get("targets", []) or []
@@ -227,110 +236,274 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             if not target_ids and not (use_group and group_name):
                 errors["base"] = "target_required"
-            else:
-                device_reg = dr.async_get(self.hass)
-                targets = []
-                for tid in target_ids:
-                    dev = device_reg.async_get(tid)
-                    if dev is not None:
-                        targets.append({
-                            "device_id": tid,
-                            "name": _device_name(dev),
-                            "ieee": _device_ieee(dev),
-                            "model": _device_model(dev),
-                            "manufacturer": _device_manufacturer(dev),
-                        })
-                inp.update({  # type: ignore[attr-defined]
-                    "targets": targets,
-                    "use_group": use_group,
-                    "group_name": group_name,
+                targets = self._candidate_targets(
+                    dr.async_get(self.hass), er.async_get(self.hass)
+                )
+                return self.async_show_form(
+                    step_id="target",
+                    data_schema=self._target_schema(targets),
+                    errors=errors,
+                )
+
+            device_reg = dr.async_get(self.hass)
+            entity_reg = er.async_get(self.hass)
+            targets = []
+            for tid in target_ids:
+                dev = device_reg.async_get(tid)
+                if dev is None:
+                    continue
+                targets.append({
+                    "device_id": tid,
+                    "name": _device_name(dev),
+                    "ieee": _device_ieee(dev),
+                    "model": _device_model(dev),
+                    "manufacturer": _device_manufacturer(dev),
+                    "kind": _target_kind(dev, entity_reg),
+                    "protocol": _infer_protocol(dev).name,
                 })
-                return await self.async_step_behavior()
+            if not targets:
+                errors["base"] = "target_required"
+            # ELI5: the protocol of the FIRST target anchors the wizard —
+            # every later source we offer must speak the same protocol.
+            protocol = _infer_protocol(
+                device_reg.async_get(target_ids[0])
+            ) if target_ids else Protocol.UNKNOWN
+            self._input = {  # type: ignore[attr-defined]
+                "targets": targets,
+                "use_group": use_group,
+                "group_name": group_name,
+                "protocol": protocol.name,
+            }
+            if errors:
+                return self.async_show_form(
+                    step_id="target",
+                    data_schema=self._target_schema(
+                        self._candidate_targets(device_reg, entity_reg)
+                    ),
+                    errors=errors,
+                )
+            return await self.async_step_source()
 
         device_reg = dr.async_get(self.hass)
         entity_reg = er.async_get(self.hass)
         targets = self._candidate_targets(device_reg, entity_reg)
-        target_options = [
-            {"value": dev_id, "label": name} for dev_id, name in targets
-        ]
+        return self.async_show_form(
+            step_id="target",
+            data_schema=self._target_schema(targets),
+        )
 
-        # ELI5: multi-select — the user can pick any number of target
-        # devices in one go. SHiP Anchor will automatically escalate to a
-        # ZCL group binding if more than two targets are chosen (to avoid
-        # the "popcorn effect" where lights turn on one at a time).
-        schema = vol.Schema(
+    def _target_schema(self, candidates: list) -> vol.Schema:
+        """ELI5: build the target-picker form (multi-select + group toggle)."""
+        options = [{"value": dev_id, "label": name} for dev_id, name in candidates]
+        return vol.Schema(
             {
                 vol.Required("targets"): SelectSelector(
-                    SelectSelectorConfig(
-                        options=target_options,
-                        mode=SelectSelectorMode.MULTIPLE,
-                    )
+                    SelectSelectorConfig(options=options, mode=SelectSelectorMode.MULTIPLE)
                 ),
                 vol.Optional("use_group", default=False): bool,
                 vol.Optional("group_name", default=""): str,
             }
         )
+
+    # ------------------------------------------------------------------
+    # Step 2 — pick the SOURCE switch(es)  (protocol-filtered)
+    # ELI5: only switches that speak the SAME protocol as the target(s)
+    # are listed, so a Zigbee switch can never be paired with a Z-Wave
+    # lock. Multi-select supports multi-way (3-way) switch setups.
+    # ------------------------------------------------------------------
+    async def async_step_source(self, user_input: dict | None = None):
+        """ELI5: offer compatible source switches (same protocol only)."""
+        errors: dict[str, str] = {}
+        inp = self._input  # type: ignore[attr-defined]
+        target_protocol = PROTOCOL_ALIASES.get(
+            str(inp.get("protocol", "")), Protocol.UNKNOWN
+        )
+
+        if user_input is not None:
+            raw_sources = user_input.get("sources", []) or []
+            if isinstance(raw_sources, str):
+                raw_sources = [raw_sources]
+            source_ids = [str(item) for item in raw_sources if item]
+            if not source_ids:
+                errors["base"] = "source_required"
+            else:
+                device_reg = dr.async_get(self.hass)
+                sources = []
+                for sid in source_ids:
+                    dev = device_reg.async_get(sid)
+                    if dev is None:
+                        continue
+                    sources.append({
+                        "device_id": sid,
+                        "name": _device_name(dev),
+                        "ieee": _device_ieee(dev),
+                        "model": _device_model(dev),
+                        "manufacturer": _device_manufacturer(dev),
+                    })
+                if not sources:
+                    errors["base"] = "source_required"
+                else:
+                    inp.update(sources=sources)
+                    return await self.async_step_behavior()
+
+        device_reg = dr.async_get(self.hass)
+        entity_reg = er.async_get(self.hass)
+        # ELI5: the dynamic filter — drop every source whose protocol does
+        # not match the target's protocol. This is the guard that prevents
+        # cross-protocol mismatches (Zigbee → Z-Wave, Matter → Shelly, …).
+        all_sources = self._candidate_sources(device_reg, entity_reg)
+        compatible = []
+        for dev_id, name in all_sources:
+            dev = device_reg.async_get(dev_id)
+            if dev is None:
+                continue
+            if _device_protocols_match(_infer_protocol(dev), target_protocol):
+                compatible.append((dev_id, name))
+        if not compatible:
+            # ELI5: honest fallback — tell the user WHY nothing was listed
+            # instead of showing an empty dropdown.
+            compatible = all_sources
         return self.async_show_form(
-            step_id="target",
-            data_schema=schema,
+            step_id="source",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("sources"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[{"value": d, "label": n} for d, n in compatible],
+                            mode=SelectSelectorMode.MULTIPLE,
+                        )
+                    )
+                }
+            ),
             errors=errors,
             description_placeholders={
-                "source": inp.get("source_name", "the source"),
+                "protocol": inp.get("protocol", "unknown"),
+                "source_count": str(len(compatible)),
             },
         )
 
     # ------------------------------------------------------------------
-    # Step 3 — behaviour mapping
+    # Step 3 — behaviour: gestures + time windows + per-kind parameters
     # ------------------------------------------------------------------
+    def _kind_capability(self, inp: dict) -> set:
+        """ELI5: union of the capabilities of every selected target."""
+        caps: set = set()
+        for t in inp.get("targets", []):
+            caps |= TARGET_CAPABILITIES.get(str(t.get("kind", "light")), set())
+        return caps
+
     async def async_step_behavior(self, user_input: dict | None = None):
         """
-        ELI5: ask what each tap / hold should do, plus optional brightness
-        and colour temperature for the target light(s).
+        ELI5: build the "rule sheet" for this binding. For each rule the
+        user picks a gesture (1x–5x tap or hold), an optional time-of-day
+        window (hour_start → hour_end), and the action parameters that the
+        selected target kind supports (brightness/colour for lights, speed
+        for fans, open/close for valves, lock/unlock for locks).
+
+        These rules are compiled by `AnchorCompiler` into LEAT rows that
+        live on the hardware — so they keep working with the hub offline.
         """
         errors: dict[str, str] = {}
         inp = self._input  # type: ignore[attr-defined]
+        caps = self._kind_capability(inp)
 
         if user_input is not None:
-            trigger = str(user_input.get("trigger", "1x Tap"))
-            brightness = int(user_input.get("brightness", 100))
-            brightness = max(0, min(255, brightness))
-            color_temp = user_input.get("color_temp_mireds")
-            if color_temp is not None:
-                color_temp = int(max(153, min(500, color_temp)))
-            transition = user_input.get("transition_seconds")
-            if transition is not None:
-                transition = int(max(0, min(60, transition)))
-
-            inp.update({  # type: ignore[attr-defined]
-                "trigger": trigger,
-                "brightness": brightness,
-                "color_temp_mireds": color_temp,
-                "transition_seconds": transition,
-            })
-            return await self.async_step_finish()
-
-        schema = vol.Schema(
-            {
-                vol.Required("trigger", default="1x Tap"): SelectSelector(
-                    SelectSelectorConfig(
-                        options=[{"value": t, "label": t} for t in TRIGGER_OPTIONS],
-                        mode=SelectSelectorMode.DROPDOWN,
+            rules = []
+            # ELI5: fixed slots (up to 4 rules) — each slot has a gesture,
+            # an optional time window, and the action parameters. A slot
+            # with no gesture set is skipped.
+            for i in range(4):
+                gesture = str(user_input.get("rule{}_gesture".format(i + 1), "") or "")
+                if not gesture:
+                    continue
+                rule: dict[str, Any] = {"gesture": gesture}
+                hour_start = user_input.get("rule{}_hour_start".format(i + 1))
+                hour_end = user_input.get("rule{}_hour_end".format(i + 1))
+                if hour_start is not None and hour_end is not None:
+                    rule["hour_start"] = int(max(0, min(23, int(hour_start))))
+                    rule["hour_end"] = int(max(0, min(23, int(hour_end))))
+                # Per-kind action parameters (only the relevant ones are set).
+                if "brightness" in caps:
+                    rule["brightness"] = int(
+                        max(
+                            0,
+                            min(
+                                255,
+                                int(user_input.get("rule{}_brightness".format(i + 1), 100)),
+                            ),
+                        )
                     )
-                ),
-                vol.Required("brightness", default=100): NumberSelector(
+                if "color_temp" in caps:
+                    ct = user_input.get("rule{}_color_temp_mireds".format(i + 1))
+                    if ct is not None:
+                        rule["color_temp_mireds"] = int(max(153, min(500, int(ct))))
+                if "transition" in caps:
+                    tt = user_input.get("rule{}_transition_seconds".format(i + 1))
+                    if tt is not None:
+                        rule["transition_seconds"] = int(max(0, min(60, int(tt))))
+                if "speed" in caps:
+                    sp = user_input.get("rule{}_fan_speed".format(i + 1))
+                    if sp is not None:
+                        rule["fan_speed"] = int(max(0, min(5, int(sp))))
+                if "open_close" in caps:
+                    rule["valve_open"] = bool(user_input.get("rule{}_valve_open".format(i + 1), True))
+                if "lock_unlock" in caps:
+                    rule["lock_unlock"] = bool(user_input.get("rule{}_lock_unlock".format(i + 1), False))
+                if "setpoint" in caps:
+                    st = user_input.get("rule{}_setpoint_c".format(i + 1))
+                    if st is not None:
+                        rule["setpoint_c"] = float(st)
+                rules.append(rule)
+            if not rules:
+                errors["base"] = "rule_required"
+            else:
+                inp["rules"] = rules
+                return await self.async_step_finish()
+
+        # Build the schema dynamically from the target kind's capabilities.
+        schema: dict = {}
+        for i in range(1, 5):
+            prefix = "rule{}".format(i)
+            schema[vol.Required("rule{}_gesture".format(i), default="")] = SelectSelector(
+                SelectSelectorConfig(
+                    options=[{"value": "", "label": "(no rule)"}]
+                    + [{"value": t, "label": t} for t in TRIGGER_OPTIONS],
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            )
+            schema[vol.Optional("rule{}_hour_start".format(i))] = NumberSelector(
+                NumberSelectorConfig(min=0, max=23, step=1, unit_of_measurement="h")
+            )
+            schema[vol.Optional("rule{}_hour_end".format(i))] = NumberSelector(
+                NumberSelectorConfig(min=0, max=23, step=1, unit_of_measurement="h")
+            )
+            if "brightness" in caps:
+                schema[vol.Optional("rule{}_brightness".format(i), default=100)] = NumberSelector(
                     NumberSelectorConfig(min=0, max=255, step=1, unit_of_measurement="%")
-                ),
-                vol.Optional("color_temp_mireds"): NumberSelector(
+                )
+            if "color_temp" in caps:
+                schema[vol.Optional("rule{}_color_temp_mireds".format(i))] = NumberSelector(
                     NumberSelectorConfig(min=153, max=500, step=1, unit_of_measurement="mireds")
-                ),
-                vol.Optional("transition_seconds"): NumberSelector(
+                )
+            if "transition" in caps:
+                schema[vol.Optional("rule{}_transition_seconds".format(i))] = NumberSelector(
                     NumberSelectorConfig(min=0, max=60, step=1, unit_of_measurement="s")
-                ),
-            }
-        )
+                )
+            if "speed" in caps:
+                schema[vol.Optional("rule{}_fan_speed".format(i))] = NumberSelector(
+                    NumberSelectorConfig(min=0, max=5, step=1)
+                )
+            if "open_close" in caps:
+                schema[vol.Optional("rule{}_valve_open".format(i), default=True)] = bool
+            if "lock_unlock" in caps:
+                schema[vol.Optional("rule{}_lock_unlock".format(i), default=False)] = bool
+            if "setpoint" in caps:
+                schema[vol.Optional("rule{}_setpoint_c".format(i))] = NumberSelector(
+                    NumberSelectorConfig(min=0, max=35, step=0.5, unit_of_measurement="°C")
+                )
         return self.async_show_form(
             step_id="behavior",
-            data_schema=schema,
+            data_schema=vol.Schema(schema),
             errors=errors,
             description_placeholders={
                 "target_count": str(len(inp.get("targets", []))),
@@ -355,7 +528,12 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             protocol_name = inp.get("protocol", "UNKNOWN")
             protocol = PROTOCOL_ALIASES.get(protocol_name, Protocol.UNKNOWN)
             targets = inp.get("targets", [])
-            source_ieee = inp.get("source_ieee", "")
+            sources = inp.get("sources", []) or []
+            # ELI5: the first source is the "primary" IEEE for the binding
+            # record; additional sources are multi-way peers that share the
+            # same group (Zigbee group / Tasmota group / Shelly script).
+            primary = sources[0] if sources else {}
+            source_ieee = primary.get("ieee", "")
             resolved_targets = []
             for t in targets:
                 resolved = dict(t)
@@ -366,20 +544,14 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             config: dict[str, Any] = {
                 "protocol": protocol.name,
                 "source_ieee": source_ieee,
-                "source_model": inp.get("source_model", ""),
-                "source_manufacturer": inp.get("source_manufacturer", ""),
+                "source_model": primary.get("model", ""),
+                "source_manufacturer": primary.get("manufacturer", ""),
                 "targets": resolved_targets,
+                "sources": sources,          # multi-way peer list (incl. primary)
+                "rules": list(inp.get("rules", [])),  # LEAT rows: gesture + window + params
             }
             if inp.get("use_group") and inp.get("group_name"):
                 config["group_name"] = inp["group_name"]
-            if inp.get("trigger"):
-                config["trigger_subtype"] = inp["trigger"]
-            if inp.get("brightness") is not None:
-                config["brightness"] = inp["brightness"]
-            if inp.get("color_temp_mireds") is not None:
-                config["color_temp_mireds"] = inp["color_temp_mireds"]
-            if inp.get("transition_seconds") is not None:
-                config["transition_seconds"] = inp["transition_seconds"]
 
             compile_summary: dict[str, Any] = {
                 "success": False,
@@ -421,20 +593,18 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
 
             title = "{} → {} target(s)".format(
-                inp.get("source_name", "source"), len(targets) or 1
+                primary.get("name", "source"), len(targets) or 1
             )
             data: dict[str, Any] = {
-                "source_device_id": inp.get("source_device_id", ""),
-                "source_name": inp.get("source_name", ""),
+                "source_device_id": primary.get("device_id", ""),
+                "source_name": primary.get("name", ""),
                 "source_ieee": source_ieee,
                 "protocol": protocol_name,
                 "targets": targets,
+                "sources": sources,             # multi-way peer list
                 "use_group": bool(inp.get("use_group", False)),
                 "group_name": inp.get("group_name", ""),
-                "trigger": inp.get("trigger", ""),
-                "brightness": inp.get("brightness"),
-                "color_temp_mireds": inp.get("color_temp_mireds"),
-                "transition_seconds": inp.get("transition_seconds"),
+                "rules": list(inp.get("rules", [])),  # LEAT rows
                 "compile": compile_summary,
             }
             return self.async_create_entry(title=title, data=data)

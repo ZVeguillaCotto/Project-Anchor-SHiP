@@ -567,7 +567,55 @@ flag (gesture = 0x8)" — see `sim/test_ship_core.c`.)*
 
 ---
 
-## Part 13: Ask an AI Agent with MCP
+## Part 13: The Target-First Wizard — Picking Devices, Gestures & Time Windows
+
+### Layer 1 — The Kitchen-Table Explanation
+
+The setup wizard (Settings → Devices & Services → Add Integration → SHiP Anchor)
+starts by asking **what you want to control**, not which switch you'll use.
+Think of it like installing a 3-way light: you decide *where the lamp lives*
+first, then you pick *which switches reach it*.
+
+Step by step:
+
+1. **Pick the target(s)** — choose one or more lights, fans, valves, locks or
+   shades. SHiP Anchor immediately detects each one's protocol (Zigbee,
+   Matter, Z-Wave, Shelly, Tasmota) and its *kind*.
+2. **Pick the source switch(es)** — *only* switches that speak the **same
+   protocol** as the target(s) are listed, so a Zigbee switch can never be
+   paired with a Z-Wave lock. Pick several switches to create a multi-way
+   (3-way) setup.
+3. **Build the rule sheet** — up to four rules, each with a gesture (1x–5x
+   tap or Hold), an optional time-of-day window (e.g. active only between 22:00
+   and 06:00), and the action parameters the target kind supports (brightness
+   + colour temp for lights, speed for fans, open/close for valves,
+   lock/unlock for locks).
+4. **Preview or apply** — dry-run prints the exact payloads (binding calls +
+   LEAT rows) in the log; apply sends them to the devices.
+
+### Layer 2 — The Engineering Ground Truth
+
+- **Protocol filtering** uses `_device_protocols_match()` in
+  `config_flow.py` — ZHA and Z2M cross-match (both Zigbee), but Zigbee↔Z-Wave,
+  Matter↔Shelly, etc. are rejected.
+- **Target-kind detection** (`_target_kind()`) maps device → capability set
+  from `TARGET_CAPABILITIES`, which drives which behaviour-step fields are
+  rendered.
+- **Rule compilation** runs through
+  `AnchorCompiler.build_leat_table()` in `compiler.py`. Each row mirrors the
+  C struct `ship_leat_entry_t` field-for-field:
+  `{group_id, domain, gesture, action_type, action_param, hour_start,
+  hour_end, enabled}`. Values that need more than one byte (colour
+  temperature in mireds 153–500, fade time) are carried in an optional
+  `frame_params` annotation that the 19-byte frame encoder uses — they are
+  NOT invented into the C struct.
+- **Time-of-day windows** honour the overnight case (e.g. 22:00 → 06:00)
+  via the `hour_start > hour_end` branch in `ship_leat_match()` (see
+  `src/ship_core/ship_protocol.c`).
+
+---
+
+## Part 14: Ask an AI Agent with MCP
 
 ### Layer 1 — The Kitchen-Table Explanation
 

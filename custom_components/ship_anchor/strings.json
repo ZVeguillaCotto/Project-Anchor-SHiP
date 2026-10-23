@@ -2,34 +2,74 @@
   "config": {
     "step": {
       "user": {
-        "title": "SHiP Anchor — Step 1 of 4: Source",
-        "description": "Which switch or button will be the SOURCE? This is the device you will tap or hold. {mode}",
-        "data": {
-          "source_device": "Source switch or button"
-        }
+        "title": "SHiP Anchor — Step 1 of 4: Target",
+        "description": "Target-first: start with what you want to CONTROL. Pick the light(s), fan, valve, lock or shade the switch should act on. SHiP Anchor detects the protocol automatically."
       },
       "target": {
-        "title": "SHiP Anchor — Step 2 of 4: Target",
-        "description": "Which lights, valves, or locks should {source} control? Pick at least one target below.",
+        "title": "SHiP Anchor — Step 1 of 4: Target",
+        "description": "Which light(s), fan, valve, lock or shade should the switch(es) control? Pick one or more. 3+ targets automatically use a group binding.",
         "data": {
           "targets": "Target device(s)",
-          "use_group": "Use a ZCL group (recommended for 3+ targets)",
+          "use_group": "Use a group (recommended for 3+ targets)",
           "group_name": "Group name (optional)"
+        }
+      },
+      "source": {
+        "title": "SHiP Anchor — Step 2 of 4: Source",
+        "description": "Now pick the switch(es) that will control them — {source_count} compatible device(s) speak the same protocol ({protocol}) as your target. Pick one, or several for a multi-way (3-way) setup.",
+        "data": {
+          "sources": "Source switch(es) — same protocol only"
         }
       },
       "behavior": {
         "title": "SHiP Anchor — Step 3 of 4: Behaviour",
-        "description": "What should the tap or hold do? {target_count} target(s) will receive this action.",
+        "description": "Build the rule sheet: for each tap/hold pick a gesture, an optional time window (start → end hour), and the action {target_count} target(s) should take. These become LEAT rows on the hardware, so they keep working with the hub offline.",
         "data": {
-          "trigger": "Trigger",
-          "brightness": "Brightness (0-255)",
-          "color_temp_mireds": "Colour temperature in mireds (153 warm → 500 cool, optional)",
-          "transition_seconds": "Transition time in seconds (how fast the light fades, optional)"
+          "rule1_gesture": "Rule 1 — gesture",
+          "rule2_gesture": "Rule 2 — gesture",
+          "rule3_gesture": "Rule 3 — gesture",
+          "rule4_gesture": "Rule 4 — gesture",
+          "rule1_hour_start": "Rule 1 — active from (hour 0-23, optional)",
+          "rule2_hour_start": "Rule 2 — active from (hour 0-23, optional)",
+          "rule3_hour_start": "Rule 3 — active from (hour 0-23, optional)",
+          "rule4_hour_start": "Rule 4 — active from (hour 0-23, optional)",
+          "rule1_hour_end": "Rule 1 — active until (hour 0-23, optional)",
+          "rule2_hour_end": "Rule 2 — active until (hour 0-23, optional)",
+          "rule3_hour_end": "Rule 3 — active until (hour 0-23, optional)",
+          "rule4_hour_end": "Rule 4 — active until (hour 0-23, optional)",
+          "rule1_brightness": "Rule 1 — brightness (0-255)",
+          "rule2_brightness": "Rule 2 — brightness (0-255)",
+          "rule3_brightness": "Rule 3 — brightness (0-255)",
+          "rule4_brightness": "Rule 4 — brightness (0-255)",
+          "rule1_color_temp_mireds": "Rule 1 — colour temp mireds (153 warm → 500 cool, optional)",
+          "rule2_color_temp_mireds": "Rule 2 — colour temp mireds (optional)",
+          "rule3_color_temp_mireds": "Rule 3 — colour temp mireds (optional)",
+          "rule4_color_temp_mireds": "Rule 4 — colour temp mireds (optional)",
+          "rule1_transition_seconds": "Rule 1 — fade time (seconds, optional)",
+          "rule2_transition_seconds": "Rule 2 — fade time (seconds, optional)",
+          "rule3_transition_seconds": "Rule 3 — fade time (seconds, optional)",
+          "rule4_transition_seconds": "Rule 4 — fade time (seconds, optional)",
+          "rule1_fan_speed": "Rule 1 — fan speed (0-5, optional)",
+          "rule2_fan_speed": "Rule 2 — fan speed (0-5, optional)",
+          "rule3_fan_speed": "Rule 3 — fan speed (0-5, optional)",
+          "rule4_fan_speed": "Rule 4 — fan speed (0-5, optional)",
+          "rule1_valve_open": "Rule 1 — open valve (false = close)",
+          "rule2_valve_open": "Rule 2 — open valve (false = close)",
+          "rule3_valve_open": "Rule 3 — open valve (false = close)",
+          "rule4_valve_open": "Rule 4 — open valve (false = close)",
+          "rule1_lock_unlock": "Rule 1 — unlock (false = lock)",
+          "rule2_lock_unlock": "Rule 2 — unlock (false = lock)",
+          "rule3_lock_unlock": "Rule 3 — unlock (false = lock)",
+          "rule4_lock_unlock": "Rule 4 — unlock (false = lock)",
+          "rule1_setpoint_c": "Rule 1 — setpoint °C (optional)",
+          "rule2_setpoint_c": "Rule 2 — setpoint °C (optional)",
+          "rule3_setpoint_c": "Rule 3 — setpoint °C (optional)",
+          "rule4_setpoint_c": "Rule 4 — setpoint °C (optional)"
         }
       },
       "finish": {
         "title": "SHiP Anchor — Step 4 of 4: Preview or Apply",
-        "description": "Review: {source} → {target_count} target(s) over {protocol}. Dry-run previews the payloads in your log without touching any hardware.",
+        "description": "Review: {source} → {target_count} target(s) over {protocol}. Dry-run previews the payloads and LEAT rows in your log without touching any hardware.",
         "data": {
           "dry_run": "Dry run (preview only, do not send to devices)"
         }
@@ -37,7 +77,9 @@
     },
     "error": {
       "source_not_found": "That source device is no longer in your device registry. Please pick another one.",
-      "target_required": "Pick at least one target device, or enable 'Use a ZCL group' and give the group a name."
+      "source_required": "Pick at least one source switch. If none are listed, your source and target may speak different protocols.",
+      "target_required": "Pick at least one target device, or enable 'Use a group' and give the group a name.",
+      "rule_required": "Set a gesture on at least one rule (1x–5x tap or Hold) before continuing."
     },
     "abort": {
       "single_instance_allowed": "SHiP Anchor is already set up on this Home Assistant. You do not need to add it again.",

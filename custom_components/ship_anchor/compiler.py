@@ -100,8 +100,143 @@ class AnchorCompiler:
             )
             return result
         parsed["protocol"] = protocol.name
+        # ELI5: if the wizard collected gesture + time-window "rule sheets",
+        # compile them into LEAT rows BEFORE dispatching the protocol
+        # binding — so the hardware gets both the binding AND the cheat
+        # sheet that decides what each tap does at each hour.
+        rules = config.get("rules") or parsed.get("rules") or []
+        if rules:
+            leat = self.build_leat_table(rules)
+            if leat:
+                result.warnings.append(
+                    "LEAT: compiled {} rule(s) into {} device row(s)".format(
+                        len(rules), len(leat)
+                    )
+                )
+                for row in leat:
+                    result.dry_run_payloads.append({"step": "leat_write", "row": row})
+            else:
+                result.warnings.append(
+                    "LEAT: no supported rules to compile (all gestures unknown)"
+                )
         await self._compile_automation(parsed, result, dry_run)
         return result
+
+    # ------------------------------------------------------------------
+    # LEAT (Local Event-Action Table) compilation
+    # ELI5: the wizard can collect "rule sheets" — a gesture (tap count /
+    # hold), an optional time-of-day window, and action parameters
+    # (brightness, colour temp, valve open/close, lock state, …). This
+    # section turns those rows into the exact LEAT table layout that the
+    # C core (`ship_leat_entry_t` in ship_protocol.h) stores on hardware.
+    # Because LEAT lives on the device, the rules keep working even when
+    # the hub is offline.
+    # ------------------------------------------------------------------
+    _GESTURE_TO_NIBBLE = {
+        "1x Tap": 1, "2x Tap": 2, "3x Tap": 3, "4x Tap": 4,
+        "5x Tap": 5, "Hold": 6,
+    }
+    # ELI5: which domain nibble a rule "belongs to" depends on what the
+    # rule does. A brightness rule is a lighting-combo domain (0x2); a
+    # plain on/off rule is OnOff (0x1); valve rules are Water (0x4);
+    # lock rules are Smart Lock (0x5). This mirrors ship_domain_t.
+    @staticmethod
+    def _rule_domain(rule: dict) -> int:
+        if "color_temp_mireds" in rule or "brightness" in rule:
+            return 0x2  # SHIP_DOMAIN_LIGHTING_COMBO
+        if "valve_open" in rule:
+            return 0x4  # SHIP_DOMAIN_WATER_VALVE
+        if "lock_unlock" in rule:
+            return 0x5  # SHIP_DOMAIN_SMART_LOCK
+        if "setpoint_c" in rule:
+            return 0x6  # SHIP_DOMAIN_HVAC_CLIMATE
+        if "fan_speed" in rule:
+            return 0x6  # SHIP_DOMAIN_HVAC_CLIMATE (fan speed param_2)
+        return 0x1      # SHIP_DOMAIN_ONOFF (plain on/off)
+
+    @staticmethod
+    def _rule_action(rule: dict) -> tuple[int, int, dict]:
+        """
+        ELI5: pack a rule's action for the LEAT row.
+
+        The C struct (`ship_leat_entry_t`) stores exactly ONE action byte
+        (`action_param`) per rule, plus an `action_type` tag (0=relay,
+        1=brightness, 2=scene, 3=valve, 4=climate). Richer values that do
+        not fit in one byte (colour temperature in mireds is 153–500!) are
+        NOT invented into the struct — they are carried in the
+        `frame_params` annotation, which the frame encoder uses when the
+        19-byte packet is actually sent (frame param_1/param_2/param_3).
+
+        Returns (action_type, action_param 0–255, frame_params annotation).
+        """
+        frame_params: dict = {}
+        if "valve_open" in rule:
+            return 3, (1 if rule["valve_open"] else 0), frame_params
+        if "lock_unlock" in rule:
+            return 0, (1 if rule["lock_unlock"] else 0), frame_params
+        if "setpoint_c" in rule:
+            # ELI5: °C × 2 to keep one decimal of precision inside a byte.
+            return 4, int(round(float(rule["setpoint_c"]) * 2)) & 0xFF, frame_params
+        if "fan_speed" in rule:
+            # ELI5: fan speed 0–5 fits easily in one byte.
+            return 4, int(rule["fan_speed"]) & 0xFF, frame_params
+        brightness = int(rule.get("brightness", 1))
+        # ELI5: brightness (0–255) IS the LEAT action byte. Colour temp and
+        # fade time only fit in the *frame* parameters — keep them there.
+        if "color_temp_mireds" in rule:
+            frame_params["param_1"] = brightness & 0xFF
+            frame_params["param_2"] = int(rule["color_temp_mireds"]) & 0xFFFF
+        if "transition_seconds" in rule:
+            frame_params["param_3"] = min(255, int(rule["transition_seconds"]) * 10)
+        if frame_params:
+            return 1, brightness & 0xFF, frame_params
+        return 0, (1 if brightness > 0 else 0), frame_params
+
+    def build_leat_table(
+        self, rules: list[dict], group_id: int = 0
+    ) -> list[dict]:
+        """
+        ELI5: turn the wizard's rule list into LEAT rows that exactly
+        match `ship_leat_entry_t` (ship_protocol.h):
+          {group_id, domain, gesture, action_type, action_param,
+           hour_start, hour_end, enabled}
+        Values that need more than one byte (colour temperature in mireds,
+        fade time) are NOT forced into the struct — they ride along in an
+        optional `frame_params` annotation for the 19-byte frame encoder.
+        """
+        table: list[dict] = []
+        for rule in rules:
+            gesture_label = str(rule.get("gesture", ""))
+            gesture = self._GESTURE_TO_NIBBLE.get(gesture_label)
+            if gesture is None:
+                # ELI5: a row with a gesture we don't support is skipped,
+                # not fatal — the remaining rules still compile.
+                _LOGGER.debug(
+                    "LEAT: skipping rule with unknown gesture %r", gesture_label
+                )
+                continue
+            domain = self._rule_domain(rule)
+            action_type, action_param, frame_params = self._rule_action(rule)
+            hour_start = int(rule.get("hour_start", 0) or 0) % 24
+            hour_end = int(rule.get("hour_end", 0) or 0) % 24
+            # ELI5: the row mirrors `ship_leat_entry_t` field-for-field so
+            # the ESPHome component can memcpy it straight into the table.
+            row = {
+                "group_id": int(group_id) & 0xFF,
+                "domain": domain,
+                "gesture": gesture,
+                "action_type": action_type,
+                "action_param": action_param & 0xFF,
+                "hour_start": hour_start,
+                "hour_end": hour_end,
+                "enabled": True,
+            }
+            # ELI5: optional annotation for the 19-byte frame encoder
+            # (colour temp / fade time). Not part of the C LEAT struct.
+            if frame_params:
+                row["frame_params"] = frame_params
+            table.append(row)
+        return table
 
     def list_bindings(self) -> list[BindingRecord]:
         """
