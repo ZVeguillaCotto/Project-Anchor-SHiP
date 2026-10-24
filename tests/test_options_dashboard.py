@@ -95,9 +95,11 @@ def _flow_with_entry(data: dict, with_compiler: bool = True) -> tuple[ShipAnchor
 # LAYER 1 — the ELI5 rule → sentence translation
 # ---------------------------------------------------------------------------
 def test_rule_eli5_single_action() -> None:
+    # ELI5 (v0.1.16): the sentence now shows the *human* percent first,
+    # with the raw 0–255 byte in brackets. 128 raw ≈ 50 %.
     assert (
-        _rule_eli5({"gesture": "1x Tap", "brightness": 100})
-        == "On a single tap: set brightness to 100."
+        _rule_eli5({"gesture": "1x Tap", "brightness": 128})
+        == "On a single tap: set brightness to 50% (raw 128)."
     )
 
 
@@ -106,10 +108,12 @@ def test_rule_eli5_multi_action_joining() -> None:
         {"gesture": "3x Tap", "brightness": 40, "color_temp_mireds": 350}
     )
     # ELI5: two actions are joined with " and " so it reads like a sentence.
+    # The colour temp now shows Kelvin (~2857 K) with raw mireds in
+    # brackets; the brightness shows its percent with the raw byte.
     assert sentence.startswith("On a triple tap:")
-    assert "set brightness to 40" in sentence
-    assert "set colour temperature to 350 mireds" in sentence
-
+    assert "set brightness to 16% (raw 40)" in sentence
+    assert "2857K" in sentence
+    assert "350 mireds" in sentence
 
 def test_rule_eli5_overnight_window() -> None:
     sentence = _rule_eli5(
@@ -146,9 +150,9 @@ def test_dashboard_renders_chain_and_rules() -> None:
     assert "Kitchen Light" in rendered
     assert "Hall Switch" in rendered
     assert "ZIGBEE_ZHA" in rendered
-    assert "On a single tap: set brightness to 100." in rendered
+    # ELI5 (v0.1.16): the first rule now reads in human units (100 raw ≈ 39 %).
+    assert "On a single tap: set brightness to 39% (raw 100)." in rendered
     assert "On a triple tap:" in rendered
-
 
 def test_dashboard_renders_two_hop_chain_with_canopy() -> None:
     data = _base_entry_data()
@@ -185,8 +189,8 @@ def test_add_rule_grows_rules_list() -> None:
     _run(flow.async_step_init({"action": "add_rule"}))
     result = _run(flow.async_step_add_rule({
         "gesture": "5x Tap",
-        "brightness": 20,
-        "color_temp_mireds": 400,
+         "brightness_percent": 40,
+         "color_temp_kelvin": 3700,
         "transition_seconds": 3,
     }))
     assert result["step_id"] == "dashboard"
@@ -194,8 +198,8 @@ def test_add_rule_grows_rules_list() -> None:
     assert len(entry.data["rules"]) == 3
     new_rule = entry.data["rules"][-1]
     assert new_rule["gesture"] == "5x Tap"
-    assert new_rule["brightness"] == 20
-    assert new_rule["color_temp_mireds"] == 400
+    assert new_rule["brightness"] == 102
+    assert new_rule["color_temp_mireds"] == 270
     assert new_rule["transition_seconds"] == 3
     # ELI5: the harness recorded the persistence call.
     assert len(flow.hass.config_entries.updates) == 1

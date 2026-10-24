@@ -29,7 +29,14 @@ from __future__ import annotations
 
 import pytest
 
-from custom_components.ship_anchor.compiler import AnchorCompiler
+from custom_components.ship_anchor.compiler import (
+    AnchorCompiler,
+    brightness_to_percent,
+    kelvin_to_mireds,
+    mireds_to_kelvin,
+    normalize_rule_units,
+    percent_to_brightness,
+)
 
 
 @pytest.fixture
@@ -183,3 +190,88 @@ def test_build_leat_table_group_id_is_one_byte(compiler: AnchorCompiler) -> None
         [{"gesture": "1x Tap", "brightness": 10}], group_id=0x1FF
     )
     assert rows[0]["group_id"] == 0x1FF & 0xFF
+
+
+# ---------------------------------------------------------------------------
+# Unit abstraction & translation (v0.1.16)
+# ELI5: the human units the wizard / dashboard collect (Kelvin, percent)
+# must translate to the exact protocol units the hardware expects.
+# ---------------------------------------------------------------------------
+def test_kelvin_to_mireds_warm_2700k() -> None:
+      # ELI5: 2700 K is the classic "warm" bulb → ~370 mireds.
+    assert kelvin_to_mireds(2700) == 370
+
+
+def test_kelvin_to_mireds_cool_5000k() -> None:
+      # ELI5: 5000 K "daylight" → 200 mireds.
+    assert kelvin_to_mireds(5000) == 200
+
+
+def test_kelvin_to_mireds_clamped_to_frame_range() -> None:
+      # ELI5: an unphysical 1 K would be 1,000,000 mireds — clamp to 500.
+    assert kelvin_to_mireds(1) == 500
+      # A very high Kelvin (very cool) clamps to the 153 floor.
+    assert kelvin_to_mireds(10000) == 153
+
+
+def test_kelvin_to_mireds_zero_is_warmest() -> None:
+      # ELI5: 0 K or below is unphysical → snap to the warmest (500 mireds).
+    assert kelvin_to_mireds(0) == 500
+    assert kelvin_to_mireds(-5) == 500
+
+
+def test_mireds_to_kelvin_round_trips() -> None:
+      # ELI5: the inverse of 2700 K is ~370 mireds, which reads back as ~2703 K.
+    assert mireds_to_kelvin(370) == 2703
+    assert mireds_to_kelvin(0) == 6536   # 0 mireds → warmest end
+
+
+def test_percent_to_brightness_half_dial_is_127() -> None:
+      # ELI5: a *half* dial (50 %) lands on 127 — the middle of a byte.
+    assert percent_to_brightness(50) == 127
+
+
+def test_percent_to_brightness_full_and_empty() -> None:
+    assert percent_to_brightness(0) == 0
+    assert percent_to_brightness(100) == 255
+
+
+def test_percent_to_brightness_clamped() -> None:
+      # ELI5: out-of-range input is clamped, never sent to hardware.
+    assert percent_to_brightness(-10) == 0
+    assert percent_to_brightness(999) == 255
+
+
+def test_brightness_to_percent_inverse() -> None:
+       # ELI5: 127 raw ≈ 50 %, 255 raw = 100 %, 0 raw = 0 %.
+    assert brightness_to_percent(127) == 50
+    assert brightness_to_percent(255) == 100
+    assert brightness_to_percent(0) == 0
+
+
+def test_normalize_translates_kelvin_and_percent() -> None:
+      # ELI5: a human rule (Kelvin + percent) becomes protocol units.
+    out = normalize_rule_units(
+         {"gesture": "1x Tap", "color_temp_kelvin": 2700, "brightness_percent": 50}
+     )
+    assert out["color_temp_mireds"] == 370
+    assert out["brightness"] == 127
+      # ELI5: the human keys are gone — only protocol keys remain.
+    assert "color_temp_kelvin" not in out
+    assert "brightness_percent" not in out
+
+
+def test_normalize_preserves_raw_protocol_units() -> None:
+      # ELI5: a rule already in protocol units (153–500 mireds, 101–255
+     # brightness) is left untouched so the compiler contract never breaks.
+    out = normalize_rule_units(
+         {"gesture": "3x Tap", "brightness": 200, "color_temp_mireds": 350}
+     )
+    assert out["brightness"] == 200
+    assert out["color_temp_mireds"] == 350
+
+
+def test_normalize_keeps_raw_byte_in_101_to_255_range() -> None:
+      # ELI5: a brightness of 200 is unambiguously a raw byte, not a percent.
+    out = normalize_rule_units({"gesture": "1x Tap", "brightness": 200})
+    assert out["brightness"] == 200

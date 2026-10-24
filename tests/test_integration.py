@@ -178,8 +178,8 @@ def test_wizard_full_flow_creates_entry_with_rules(patched_registries) -> None:
     # Step 3 → behaviour: one 3x-tap rule that dims the light.
     _run(flow.async_step_behavior({
         "rule1_gesture": "3x Tap",
-        "rule1_brightness": 120,
-        "rule1_color_temp_mireds": 350,
+        "rule1_brightness_percent": 50,
+        "rule1_color_temp_kelvin": 2700,
         "rule1_transition_seconds": 2,
     }))
     # Step 4 → canopy: skip the intermediate module (direct one-hop binding).
@@ -192,8 +192,10 @@ def test_wizard_full_flow_creates_entry_with_rules(patched_registries) -> None:
     data = result["data"]
     assert data["rules"] and data["rules"][0]["gesture"] == "3x Tap"
     rule = data["rules"][0]
-    assert rule["brightness"] == 120
-    assert rule["color_temp_mireds"] == 350
+        # ELI5 (v0.1.16): the human input (50 %, 2700 K) was translated to
+    # the protocol units the LEAT row stores (127-byte brightness, 370 mireds).
+    assert rule["brightness"] == 127
+    assert rule["color_temp_mireds"] == 370
     assert rule["transition_seconds"] == 2
     assert data["targets"][0]["device_id"] == "light1"
     assert data["sources"][0]["device_id"] == "sw_a"
@@ -245,7 +247,7 @@ def test_wizard_source_first_flow(patched_registries) -> None:
 
     # Target → behaviour → canopy (empty) → finish.
     _run(flow.async_step_target({"targets": ["light1"]}))
-    _run(flow.async_step_behavior({"rule1_gesture": "1x Tap", "rule1_brightness": 80}))
+    _run(flow.async_step_behavior({"rule1_gesture": "1x Tap", "rule1_brightness_percent": 80}))
     _run(flow.async_step_canopy({"canopy": ""}))
     result = _run(flow.async_step_finish({"dry_run": True}))
 
@@ -275,7 +277,7 @@ def test_wizard_canopy_step_records_two_hop_chain(patched_registries) -> None:
 
     _run(flow.async_step_target({"targets": ["light1"]}))
     _run(flow.async_step_source({"sources": ["sw_a"]}))
-    _run(flow.async_step_behavior({"rule1_gesture": "2x Tap", "rule1_brightness": 60}))
+    _run(flow.async_step_behavior({"rule1_gesture": "2x Tap", "rule1_brightness_percent": 60}))
 
     # ELI5: the canopy picker lists devices other than the source/target.
     form = _run(flow.async_step_canopy(None))

@@ -58,7 +58,14 @@ from homeassistant.helpers.selector import (
 )
 
 from . import DOMAIN
-from .compiler import AnchorCompiler
+from .compiler import (
+    AnchorCompiler,
+    brightness_to_percent,
+    kelvin_to_mireds,
+    mireds_to_kelvin,
+    normalize_rule_units,
+    percent_to_brightness,
+)
 from .protocols import Protocol, PROTOCOL_ALIASES
 
 _LOGGER = logging.getLogger(__name__)
@@ -188,9 +195,22 @@ def _rule_actions_phrase(rule: dict) -> str:
     """
     actions: list[str] = []
     if "brightness" in rule:
-        actions.append("set brightness to {}".format(rule["brightness"]))
+        # ELI5: show the *human* dial (a percent) first, with the raw 0–255
+         # byte in brackets so the non-engineer can verify the hardware
+         # value without thinking about mireds or bytes.
+        raw = int(rule["brightness"])
+        actions.append(
+            "set brightness to {}% (raw {})".format(brightness_to_percent(raw), raw)
+         )
     if "color_temp_mireds" in rule:
-        actions.append("set colour temperature to {} mireds".format(rule["color_temp_mireds"]))
+        # ELI5: show the *human* Kelvin value first (like a bulb box),
+         # with the raw mireds in brackets for the engineer.
+        raw_mireds = int(rule["color_temp_mireds"])
+        actions.append(
+            "set colour temperature to ~{}K ({} mireds)".format(
+                mireds_to_kelvin(raw_mireds), raw_mireds
+            )
+        )
     if "transition_seconds" in rule:
         actions.append("fade over {} s".format(rule["transition_seconds"]))
     if "fan_speed" in rule:
@@ -553,14 +573,14 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             0,
                             min(
                                 255,
-                                int(user_input.get("rule{}_brightness".format(i + 1), 100)),
+                                int(percent_to_brightness(user_input.get("rule{}_brightness_percent".format(i + 1), 100))),
                             ),
                         )
                     )
                 if "color_temp" in caps:
-                    ct = user_input.get("rule{}_color_temp_mireds".format(i + 1))
+                    ct = user_input.get("rule{}_color_temp_kelvin".format(i + 1))
                     if ct is not None:
-                        rule["color_temp_mireds"] = int(max(153, min(500, int(ct))))
+                        rule["color_temp_mireds"] = kelvin_to_mireds(ct)
                 if "transition" in caps:
                     tt = user_input.get("rule{}_transition_seconds".format(i + 1))
                     if tt is not None:
@@ -605,12 +625,12 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 NumberSelectorConfig(min=0, max=23, step=1, unit_of_measurement="h")
             )
             if "brightness" in caps:
-                schema[vol.Optional("rule{}_brightness".format(i), default=100)] = NumberSelector(
-                    NumberSelectorConfig(min=0, max=255, step=1, unit_of_measurement="%")
+                schema[vol.Optional("rule{}_brightness_percent".format(i), default=100)] = NumberSelector(
+                    NumberSelectorConfig(min=0, max=100, step=1, unit_of_measurement="%")
                 )
             if "color_temp" in caps:
-                schema[vol.Optional("rule{}_color_temp_mireds".format(i))] = NumberSelector(
-                    NumberSelectorConfig(min=153, max=500, step=1, unit_of_measurement="mireds")
+                schema[vol.Optional("rule{}_color_temp_kelvin".format(i))] = NumberSelector(
+                    NumberSelectorConfig(min=2000, max=6500, step=100, unit_of_measurement="K")
                 )
             if "transition" in caps:
                 schema[vol.Optional("rule{}_transition_seconds".format(i))] = NumberSelector(
@@ -1178,12 +1198,12 @@ class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
             ),
         }
         if "brightness" in caps:
-            fields[vol.Optional("brightness", default=100)] = NumberSelector(
-                NumberSelectorConfig(min=0, max=255, step=1, unit_of_measurement="%")
+            fields[vol.Optional("brightness_percent", default=100)] = NumberSelector(
+                NumberSelectorConfig(min=0, max=100, step=1, unit_of_measurement="%")
             )
         if "color_temp" in caps:
-            fields[vol.Optional("color_temp_mireds")] = NumberSelector(
-                NumberSelectorConfig(min=153, max=500, step=1, unit_of_measurement="mireds")
+            fields[vol.Optional("color_temp_kelvin")] = NumberSelector(
+                NumberSelectorConfig(min=2000, max=6500, step=100, unit_of_measurement="K")
             )
         if "transition" in caps:
             fields[vol.Optional("transition_seconds")] = NumberSelector(
@@ -1223,9 +1243,17 @@ class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
                     rule["hour_start"] = int(max(0, min(23, int(hour_start))))
                     rule["hour_end"] = int(max(0, min(23, int(hour_end))))
                 if "brightness" in caps:
-                    rule["brightness"] = int(max(0, min(255, int(user_input.get("brightness", 100)))))
-                if "color_temp" in caps and user_input.get("color_temp_mireds") is not None:
-                    rule["color_temp_mireds"] = int(max(153, min(500, int(user_input["color_temp_mireds"]))))
+                      # ELI5 (v0.1.16): the user types a 0–100 % dial; we
+                      # translate it to the device's 0–255 byte.
+                    rule["brightness"] = percent_to_brightness(
+                        int(user_input.get("brightness_percent", 100))
+                     )
+                if "color_temp" in caps and user_input.get("color_temp_kelvin") is not None:
+                      # ELI5 (v0.1.16): the user types Kelvin (like a bulb
+                      # box); we translate it to mireds for the hardware.
+                    rule["color_temp_mireds"] = kelvin_to_mireds(
+                        int(user_input["color_temp_kelvin"])
+                     )
                 if "transition" in caps and user_input.get("transition_seconds") is not None:
                     rule["transition_seconds"] = int(max(0, min(60, int(user_input["transition_seconds"]))))
                 if "speed" in caps and user_input.get("fan_speed") is not None:

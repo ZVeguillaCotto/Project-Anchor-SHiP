@@ -782,8 +782,9 @@ can assert their exact wording:
   fields (brightness → colour temp → fade → fan speed → valve → lock →
   setpoint); empty → `"toggle the target (on / off)"`.
 - `_rule_eli5(rule)` → one sentence, e.g.
-  `"On a triple tap: set brightness to 120, set colour temperature to 350
-  mireds and fade over 2 s."`
+  `"On a triple tap: set brightness to 50% (raw 127), set colour temperature
+   to ~2857K (350 mireds) and fade over 2 s."` (see Part 17 for the human
+   units)
 
 The `add_rule` schema adapts to the target's kind via `TARGET_CAPABILITIES`
 (`_target_capabilities(data)`), the same capability table the wizard uses.
@@ -798,6 +799,70 @@ surface stays at seven tools in v0.1.15) and it does not change the wire
 format.
 
 ---
+
+## Part 17: Human-Friendly Units — Kelvin and Percent, Not Mireds and Bytes
+
+### Layer 1 — The Kitchen-Table Explanation
+
+Ask a person what colour temperature they want and they will answer in
+**Kelvin**, the number printed on a bulb box: *2700 K is warm and cosy, 5000 K
+is cool daylight.* Ask them what brightness they want and they will answer in a
+**percentage**: *half*, *80 %*.
+
+Home Assistant's old form made them type the *machine's* numbers instead: a
+brightness byte from 0–255 and a colour temperature in **mireds** (a
+153–500 scale that goes the wrong way and makes no one's head stop spinning).
+
+In v0.1.16 SHiP Anchor does the translation for you:
+
+- Type **Kelvin** (2000 K warm → 6500 K cool) and SHiP Anchor converts it to
+  mireds.
+- Type a **percentage** (0–100 %) and SHiP Anchor converts it to a 0–255 byte.
+- The dashboard then *shows you both* — the human value first, the raw value
+  in brackets — so a non-engineer can verify the hardware value without
+  thinking about mireds or bytes:
+   `"set brightness to 50% (raw 127)"`, `"set colour temperature to
+   ~2857K (350 mireds)"`.
+
+### Layer 2 — The Engineering Ground Truth
+
+The translation lives in `custom_components/ship_anchor/compiler.py` as four
+**pure, unit-tested** functions (plus one bridge):
+
+- `kelvin_to_mireds(k) = round(1000000 / k)`, clamped to 153–500. So 2700 K →
+  370 mireds, 5000 K → 200 mireds, 2000 K → 500 mireds.
+- `mireds_to_kelvin(m) = round(1000000 / m)` — the inverse, used for display.
+- `percent_to_brightness(p) = int(255 * p / 100)` — the classic Home
+  Assistant convention, so 50 % → 127, 100 % → 255, 0 % → 0.
+- `brightness_to_percent(b)` — the inverse, used for display.
+- `normalize_rule_units(rule)` — the bridge: it turns a rule that still
+  carries *human* keys (`color_temp_kelvin`, `brightness_percent`) into the
+  *protocol* keys (`color_temp_mireds`, `brightness`) before the rule is
+  stored.
+
+**The invariant the project protects:** the canonical rule dict on the config
+entry and the LEAT rows the C core reads are *always* in protocol units
+(`brightness` 0–255, `color_temp_mireds` 153–500). Translation happens only at
+the `config_flow.py` boundary — the wizard's `async_step_behavior` and the
+options flow's `async_step_add_rule` read the human fields and write the
+protocol fields. The C struct `ship_leat_entry_t`, its Layer-1 tests, and the
+19-byte wire format are untouched. `normalize_rule_units` is also
+*back-compatible*: a rule already in protocol units (e.g. `brightness: 200`,
+`color_temp_mireds: 350`) is left exactly as-is, so existing bindings and the
+compiler's Layer-1 contract never change.
+
+### Examples
+
+| User types | SHiP Anchor stores | The dashboard shows |
+|---|---|---|
+| 2700 K | 370 mireds | "~2857K (350 mireds)"* |
+| 5000 K | 200 mireds | "~5000K (200 mireds)" |
+| 50 % | 127 (byte) | "50% (raw 127)" |
+| 100 % | 255 (byte) | "100% (raw 255)" |
+
+\* `350 mireds` reads back as `~2857K` (the inverse of 370 mireds is 2703 K;
+the round-trip is lossy by one or two Kelvin because of rounding, which is
+exactly the tolerance a human expects of a bulb box).
 
 *Guide written for SHiP v0.1 (Project Anchor) — October 2026.*
 *"ELI5 First, Engineering Second." — The Anchor Mandate.*

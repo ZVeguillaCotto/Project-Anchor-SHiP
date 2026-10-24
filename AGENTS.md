@@ -105,3 +105,29 @@ non-engineer *read and edit* a binding in plain English.
   rule translation, the dashboard chain rendering (including the two-hop
   canopy chain), and the add-rule / delete-rule / delete-binding / erase-all
   round trips against the fake `config_entries.async_update_entry`.
+
+## v0.1.16 — User-Friendly Unit Abstraction & Translation Layer (read before the wizard or compiler)
+
+The wizard and the options dashboard now accept **human units** and translate
+them to protocol units:
+
+- **Kelvin** for colour temperature (2000 K warm → 6500 K cool) instead of
+  raw mireds; **a percentage (0–100 %)** for brightness instead of a raw
+   0–255 byte.
+- **The translation engine lives in `compiler.py`** as pure, unit-tested
+   functions: `kelvin_to_mireds()` (`round(1000000 / K)`, clamped 153–500),
+   `mireds_to_kelvin()` (inverse), `percent_to_brightness()` (classic
+   `int(255 * percent / 100)` convention, so 50 % → 127), `brightness_to_percent()`,
+   and `normalize_rule_units()` (the bridge that turns a human rule into
+  protocol units before it is stored).
+- **The canonical rule dict stays in protocol units** (`brightness` 0–255,
+   `color_temp_mireds` 153–500) so the C struct `ship_leat_entry_t` and the
+  Layer-1 compiler tests never change — translation happens at the
+   `config_flow.py` boundary (wizard `async_step_behavior` + options `async_step_add_rule`).
+- **The ELI5 renderer** (`_rule_actions_phrase`) shows the human value first
+   with the raw value in brackets, e.g. `"set brightness to 50% (raw 127)"`
+   and `"set colour temperature to ~2857K (350 mireds)"`.
+- **Tests:** `tests/test_compiler_unit.py` gains 12 converter tests (2700 K →
+   370 mireds, 50 % → 127, clamping, inverses, back-compat); the dashboard and
+   integration tests feed human units and assert the translated protocol
+   values. Total **74 passed**.

@@ -49,6 +49,110 @@ from .protocols.zwave import (
 _LOGGER = logging.getLogger(__name__)
 
 
+# ------------------------------------------------------------------
+# Unit abstraction & translation (v0.1.16)
+# ------------------------------------------------------------------
+# ELI5: the wizard and the options dashboard let a non-engineer type
+# *human* numbers — a colour temperature in **Kelvin** (2000K warm →
+# 6500K cool, like the label on a bulb box) and a **brightness
+# percentage** (0–100 %). But the hardware and the LEAT table speak
+# *protocol* numbers: colour temperature in **mireds** (153–500) and
+# brightness in a raw **0–255** byte.
+#
+# The canonical rule dict that lives on the config entry and that the
+# LEAT compiler reads is ALWAYS in protocol units:
+#     rule["brightness"]          → 0–255
+#     rule["color_temp_mireds"] → 153–500
+# That keeps the C struct `ship_leat_entry_t` and every compiler test
+# (Layer 1) honest. These helpers are the single, pure, unit-tested
+# bridge that turns the human units a user types into the protocol
+# units the hardware expects — and back again for display.
+
+# ELI5: the bulb-box range of white light a human is comfortable with.
+KELVIN_MIN = 153      # ~6536 K — the coolest (bluest) practical white
+KELVIN_MAX = 6536     # ~153 mireds — the warmest (most orange) practical white
+
+
+def kelvin_to_mireds(kelvin: float) -> int:
+    """ELI5: mireds are "millions of a Kelvin" — ``mireds = 1000000 / K``.
+
+    A warm bulb (2700 K) is ~370 mireds; a cool daylight bulb (5000 K) is
+     200 mireds. The result is clamped to the 153–500 range the LEAT frame
+    parameter (a 16-bit ``param_2``) and the hardware understand.
+     """
+    kelvin = float(kelvin)
+    if kelvin <= 0:
+        # ELI5: 0 K or below is unphysical — snap to the warmest end.
+        return 500
+    mireds = round(1000000.0 / kelvin)
+    return max(153, min(500, mireds))
+
+
+def mireds_to_kelvin(mireds: int) -> int:
+    """ELI5: the inverse — ``kelvin = 1000000 / mireds`` (rounded).
+
+    Used only to show a human what a stored rule *means* (e.g. a rule
+    stored at 350 mireds reads back as "~2857 K").
+     """
+    mireds = int(mireds)
+    if mireds <= 0:
+        return KELVIN_MAX
+    return int(round(1000000.0 / mireds))
+
+
+def percent_to_brightness(percent: float) -> int:
+    """ELI5: map a human 0–100 % dial to the device's 0–255 byte.
+
+     50 % → 127 (we use the classic Home Assistant convention
+      ``int(255 * percent / 100)`` — a proportional mapping truncated
+      toward zero — so a *half* dial lands on 127), 100 % → 255, 0 % → 0.
+     Out-of-range input is clamped so a user can't type a value the
+    hardware can't honour.
+      """
+    percent = float(percent)
+    percent = max(0.0, min(100.0, percent))
+    return int(255 * percent / 100.0)
+
+
+def brightness_to_percent(brightness: int) -> int:
+    return int(round(brightness / 255.0 * 100))
+
+
+def normalize_rule_units(rule: dict) -> dict:
+    """ELI5: translate a rule that still carries *human* units into the
+    *protocol* units the LEAT compiler and the C struct expect.
+
+    This is the bridge the wizard and the options dashboard call right
+    before a rule is stored. It accepts both human and protocol inputs
+    so it is safe to run on an already-normalised rule:
+
+       * ``color_temp_kelvin`` (a key, e.g. 2700) → ``color_temp_mireds``
+         (370). A pre-existing ``color_temp_mireds`` key is left untouched.
+       * ``brightness_percent`` (a key, e.g. 50) → ``brightness`` (127).
+         A pre-existing 0–255 ``brightness`` key is left untouched, so the
+         compiler's existing Layer-1 contract never changes.
+     """
+    out = dict(rule)
+    # Colour temperature: prefer an explicit Kelvin key; else translate a
+    # human "mireds" key only if it actually looks like a Kelvin value.
+    if "color_temp_kelvin" in out and out["color_temp_kelvin"] is not None:
+        out["color_temp_mireds"] = kelvin_to_mireds(out["color_temp_kelvin"])
+        out.pop("color_temp_kelvin", None)
+    # Brightness: an explicit percent key always wins; a bare 0–100 value
+    # in "brightness" is a percent, a value already in 101–255 is a raw
+    # byte and is kept as-is (back-compat with the compiler + tests).
+    if "brightness_percent" in out and out["brightness_percent"] is not None:
+        out["brightness"] = percent_to_brightness(out["brightness_percent"])
+        out.pop("brightness_percent", None)
+    elif "brightness" in out and out["brightness"] is not None:
+        value = int(out["brightness"])
+        if 0 <= value <= 100:
+            # ELI5: a value in the percent range is almost certainly a
+            # percentage, so translate it. (100 % → 255, the brightest.)
+            out["brightness"] = percent_to_brightness(value)
+    return out
+
+
 class AnchorCompiler:
     """Coordinate automation processing, protocol dispatch, and persistence."""
 

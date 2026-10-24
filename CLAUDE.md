@@ -166,6 +166,32 @@ valve."
   canopy chain), and the add-rule / delete-rule / delete-binding / erase-all
   round trips against the fake `config_entries.async_update_entry`.
 
+### v0.1.16 — User-Friendly Unit Abstraction & Translation Layer
+
+The wizard and the options dashboard now speak **human units** and silently
+translate them to the protocol units the hardware expects:
+
+- **Kelvin for colour temperature** (2000 K warm → 6500 K cool, like a bulb
+  box) instead of raw mireds (153–500).
+- **A percentage (0–100 %) for brightness** instead of a raw 0–255 byte.
+- **The translation engine lives in `compiler.py`** as pure, unit-tested
+  functions: `kelvin_to_mireds()` (`round(1000000 / K)`, clamped 153–500),
+   `mireds_to_kelvin()` (inverse), `percent_to_brightness()` (classic
+   `int(255 * percent / 100)` convention, so 50 % → 127), `brightness_to_percent()`,
+   and `normalize_rule_units()` (the bridge that turns a human rule into
+  protocol units before it is stored).
+- **The canonical rule dict stays in protocol units** (`brightness` 0–255,
+   `color_temp_mireds` 153–500) so the C struct `ship_leat_entry_t` and the
+  Layer-1 compiler tests never change — translation happens at the
+   `config_flow.py` boundary (wizard `async_step_behavior` + options `async_step_add_rule`).
+- **The ELI5 renderer** (`_rule_actions_phrase`) shows the human value first
+   with the raw value in brackets, e.g. `"set brightness to 50% (raw 127)"`
+   and `"set colour temperature to ~2857K (350 mireds)"`.
+- **Tests:** `tests/test_compiler_unit.py` gains 12 converter tests (2700 K →
+   370 mireds, 50 % → 127, clamping, inverses, back-compat); the dashboard and
+   integration tests feed human units and assert the translated protocol
+   values. Total **74 passed**.
+
 ### Repository map
 
 | Path | Purpose |
@@ -176,7 +202,7 @@ valve."
 | `src/ship_core/ship_protocol.h` | Frame layout, enums, protocol and HAL APIs |
 | `src/ship_core/ship_protocol.c` | SipHash, frame encode/decode, LEAT, Mesh-RTC |
 | `src/ship_core/ship_radio_hal.c` | ESP-IDF, Nordic, OpenThread, native radio paths |
-| `custom_components/ship_anchor/compiler.py` | Automation parser, multi-protocol binding compiler, LEAT rule compiler, and multi-hop chain compiler |
+| `custom_components/ship_anchor/compiler.py` | Automation parser, multi-protocol binding compiler, LEAT rule compiler, multi-hop chain compiler, and the human↔protocol unit translation engine (`kelvin_to_mireds`, `percent_to_brightness`, `normalize_rule_units`) |
 | `custom_components/ship_anchor/quirks_inspector.py` | Zigbee endpoint, preflight, and group inspection |
 | `custom_components/ship_anchor/__init__.py` | Home Assistant integration setup and services |
 | `custom_components/ship_anchor/config_flow.py` | Bidirectional wizard (direction → anchor → other-end → behavior → canopy → finish), visual options-flow dashboard & LEAT inspector |
@@ -206,7 +232,7 @@ no radios, no network) until the very top:
 
 | Layer | What it is | Command | Target |
 |---|---|---|---|
-| **1 — Unit** | Fast, isolated tests of pure logic: `_device_protocols_match()`, `_target_kind()`, `_infer_protocol()`, `TARGET_CAPABILITIES`, the LEAT row mapping (`build_leat_table()`, `_rule_domain()`, `_rule_action()`), the multi-hop chain compiler, and the options-dashboard ELI5 rule translators. No HA, no I/O. | `python3 -m pytest tests/ -v` | 62 passed (all layers combined) |
+| **1 — Unit** | Fast, isolated tests of pure logic: `_device_protocols_match()`, `_target_kind()`, `_infer_protocol()`, `TARGET_CAPABILITIES`, the LEAT row mapping (`build_leat_table()`, `_rule_domain()`, `_rule_action()`), the multi-hop chain compiler, and the options-dashboard ELI5 rule translators. No HA, no I/O. | `python3 -m pytest tests/ -v` | 74 passed (all layers combined) |
 | **2 — Integration** | Component tests that wire the wizard, the persistent store (`.storage/ship_anchor.bindings`), and `AnchorCompiler` together: cross-protocol source filtering, full target→source→behaviour→finish flow, JSON serialisation round-trip, and the resilient `erase_all`. | `python3 -m pytest tests/ -v` | (included above) |
 | **3 — System / disaster** | The C protocol core (`test_ship_core.c`) and the Python simulation + MCP disaster drills (`run_anchor_benchmarks.py`), which *do* touch the real 19-byte encoder, SipHash, LEAT, Mesh-RTC, and radio HAL. | `gcc … && /tmp/test_ship_core` and `python3 sim/run_anchor_benchmarks.py` | 10/10 and 6/6 |
 

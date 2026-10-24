@@ -33,6 +33,7 @@ Think of it like programming your TV remote to also work with the neighbours' TV
 - **Bidirectional wizard** — start from either the source switch or the target load; the other end is protocol-filtered so cross-bus pairings are impossible (v0.1.14)
 - **Multi-hop canopy routing** — chain-like `switch → canopy/relay → load` bindings for physical power-gating ceiling canopies (v0.1.14); a broadcast-like multicast group mesh is the roadmap step
 - **Visual LEAT & Multi-Hop Inspector** — a dashboard in the Home Assistant options dialog that renders the whole binding (chain + protocol + every LEAT rule) in plain English, and lets you add or delete a rule or a source binding without touching JSON (v0.1.15)
+- **Human-friendly units** — the wizard and dashboard speak Kelvin (2000K warm → 6500K cool) and a brightness percentage (0–100 %), and silently translate them into the protocol values the hardware needs (mireds and a 0–255 byte) (v0.1.16)
 - **Zigbee** (ZHA & Zigbee2MQTT) — direct device-to-device binding with auto-discovery of vendor quirks (Inovelli, Aqara, Tuya, Philips Hue, SONOFF)
 - **Matter 1.3–1.6** — two-step ACL + Binding table writes via `matterjs-server` WebSocket API
 - **Z-Wave 700/800** — Association Group programming via `zwave_js` (with ZWLR guard)
