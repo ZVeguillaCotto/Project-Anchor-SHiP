@@ -228,7 +228,57 @@ silently translate them to the protocol units the hardware needs.
     rule already in protocol units passes through unchanged.
   - `tests/test_compiler_unit.py` gains 12 converter tests; total **74 passed**.
 
----
+### v0.1.17 — Date-Stamped Architectural Decision Record
+*(2026-10-24)*
+
+No new runtime surface — this release **fossilized the project's memory**.
+
+- **What happened:** the chronological, *date-stamped* history that previously
+  lived only in the git log was written out as this self-contained ADR
+  (`ARCH_DECISIONS.md`), and `CLAUDE.md` / `AGENTS.md` / `README.md` /
+  `GUIDE_FOR_HUMANS.md` were pointed at it.
+- **Why it mattered:** a clean public launch can reset the git history, which
+  would erase *why* each design choice was made. Recording the milestones,
+  trade-offs, and the six dead ends in a file keeps the reasoning intact even
+  if the commit graph is rewritten.
+- **Engineering ground truth:** the wire format, C core, and the 74-test
+  pyramid are **unchanged**; only documentation was added and aligned.
+
+### v0.1.18 — Advanced Mesh Resilience, DAG Branching & 8th MCP Diagnostic
+*(2026-10-25)*
+
+Three pillars, all of them "is my mesh still healthy, and can it fan out to
+many branches at once?".
+
+- **Pillar 1 — Orphaned Mesh Heartbeat:** every hop in a chain remembers when it
+  last heard a *genuine* (HMAC-checked, anti-replay-cleared) frame. From the gap
+  we derive a health verdict — **UNKNOWN** (never heard anything, needs a
+  re-handshake to baseline), **HEALTHY** (within one window), **DEGRADED** (two
+  missed windows, warn the user), **ORPHANED** (three or more, branch severed,
+  flag it). Implemented in the C core (`ship_heartbeat_feed` /
+  `ship_heartbeat_check` / `ship_heartbeat_rehandshake_needed`,
+  `ship_hb_health_t` enum, `ship_hb_state_t` struct — 11/11 C tests) and mirrored
+  in pure Python (`ship_protocol.py`), wired into the options-flow dashboard as a
+  per-hop degradation flag with a **"Re-handshake"** action that re-arms severed
+  hops.
+- **Pillar 2 — Multi-Zone DAG Branching:** `async_compile_multihop` was refactored
+  from a *sequential array* into a **directed acyclic graph** that supports
+  one-to-many fan-out — one source reaching many target zones through shared
+  relays. The new `async_compile_dag(dag, rules, dry_run, group_name)` accepts
+  adjacency-mappings, node-with-children, 2-tuples, or
+    `{parent/child}` / `{source/target}` shapes, topologically orders the branches
+  (cycles are dropped with an honest warning), and — critically — a broken branch
+  is reported but does **not** abort the others ("one severed zone must not blind
+  the others"). Each hop is tagged with `hop_index` and a `zone`.
+- **Pillar 3 — 8th MCP Diagnostic Tool `ship_diagnose_mesh`:** a *read-only*
+  "is my mesh alive?" tool. It ingests a per-hop heartbeat snapshot and returns a
+  health verdict per hop, how many branches are orphaned/degraded, whether any
+  branch needs a re-handshake, and a modeled multi-hop latency
+   (`hop_count × 0.864 ms`). The MCP surface grows from **seven to eight tools**
+  and stays under the **1,500** lexical-token tripwire (measured **1,405**).
+- **Engineering ground truth:** the 19-byte frame, SipHash, LEAT, and Mesh-RTC
+  are **unchanged**. The LEAT row stays rigid. New tests: 6 heartbeat + 5 DAG +
+  6 MCP. Drill 6 now asserts the full **eight-tool** surface.
 
 ## Part 3 — Key Design Trade-Offs & Guardrails
 
@@ -267,13 +317,13 @@ device could read garbage.
 
 ### 3.3 The token-ceiling tripwire for the MCP surface
 
-**ELI5:** The seven MCP tool schemas are shown to an AI client. If the schemas
+**ELI5:** The eight MCP tool schemas are shown to an AI client. If the schemas
 get bloated, every tool call costs more tokens (and more money). So we put a
 **ceiling** on the total and a test that fails if it is exceeded.
 
 - **Decision:** the MCP schema must stay under a lexical-token tripwire
    (currently **< 1,500**, raised from 1,000 in v0.1.11 when two tools were
-  added). Drill 6 in `sim/run_anchor_benchmarks.py` asserts the full seven-tool
+  added). Drill 6 in `sim/run_anchor_benchmarks.py` asserts the full eight-tool
   surface and the token count.
 - **Trade-off:** a hard ceiling forces compact schemas (short names, compact
   JSON) and guards against accidental bloat. **Honest caveat:** the count is an
@@ -330,6 +380,8 @@ These are the "graves" that cost real debugging time. They live in
 | v0.1.14 | 2026-10-23 | Bidirectional wizard + chain-like multi-hop canopy routing. |
 | v0.1.15 | 2026-10-23 | Visual options-flow dashboard & LEAT inspector. |
 | v0.1.16 | 2026-10-24 | Human-friendly units (Kelvin + percent) with a translation layer. |
+| v0.1.17 | 2026-10-24 | Date-stamped Architectural Decision Record (fossilized project memory). |
+| v0.1.18 | 2026-10-25 | Orphaned-mesh heartbeat + DAG branch routing + 8th MCP diagnostic. |
 
 ---
 

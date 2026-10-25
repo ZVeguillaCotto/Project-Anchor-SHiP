@@ -164,3 +164,72 @@ def test_multihop_group_name_is_forwarded(compiler: AnchorCompiler) -> None:
     assert any(
         "anchor_grp_7" in str(step.get("params", {})) for step in tasmota_payloads
     )
+
+# ---------------------------------------------------------------------------
+# v0.1.18 — Pillar 2: Multi-Zone Virtual Grouping / DAG routing
+# ---------------------------------------------------------------------------
+def test_dag_one_to_many_fanout(compiler: AnchorCompiler) -> None:
+    # ELI5: one source canopy driving THREE children (a light, a fan, a
+    # valve) is the multi-zone "virtual grouping". It must produce exactly
+    # THREE branches, each tagged with its own zone. The node-with-children
+    # shape keeps the *source* device's identifiers, so its protocol is
+    # detected (a bare string key would drop the source's protocol).
+    sw = _device("sw", [("shelly", "192.0.2.10")])
+    light = _device("light", [("shelly", "192.0.2.20")])
+    fan = _device("fan", [("shelly", "192.0.2.30")])
+    valve = _device("valve", [("shelly", "192.0.2.40")])
+    dag = [dict(sw, children=[light, fan, valve])]
+    result = _run(compiler.async_compile_dag(dag, dry_run=True))
+    assert result.success, result.errors
+    assert len(result.bindings_added) == 3
+    # ELI5: the three branches are tagged by their child (zone) id.
+    zones = sorted(
+        p.get("zone")
+        for p in result.dry_run_payloads
+        if "zone" in p and p.get("step") != "leat_write"
+    )
+    assert "fan" in zones
+    assert "valve" in zones
+
+
+def test_dag_list_of_edges(compiler: AnchorCompiler) -> None:
+      # ELI5: the list-of-edges shape is just a 2-tuple per branch.
+    sw = _device("sw", [("shelly", "192.0.2.10")])
+    light = _device("light", [("shelly", "192.0.2.20")])
+    result = _run(compiler.async_compile_dag([[sw, light]], dry_run=True))
+    assert result.success, result.errors
+    assert len(result.bindings_added) == 1
+    assert result.bindings_added[0].source_ieee == "192.0.2.10"
+    assert result.bindings_added[0].target_ieee == "192.0.2.20"
+
+
+def test_dag_linear_chain_matches_legacy(compiler: AnchorCompiler) -> None:
+      # ELI5: a linear chain fed through the DAG compiler must produce the same
+      # two bindings as the legacy async_compile_multihop.
+    chain = [
+          _device("sw", [("shelly", "192.0.2.10")]),
+          _device("canopy", [("shelly", "192.0.2.30")]),
+          _device("load", [("shelly", "192.0.2.40")]),
+     ]
+    legacy = _run(compiler.async_compile_multihop(chain, dry_run=True))
+    dag_edges = [(chain[0], chain[1]), (chain[1], chain[2])]
+    dag = _run(compiler.async_compile_dag(dag_edges, dry_run=True))
+    assert legacy.success and dag.success
+    assert [b.target_ieee for b in legacy.bindings_added] == [
+        b.target_ieee for b in dag.bindings_added
+      ]
+
+
+def test_dag_empty_is_error(compiler: AnchorCompiler) -> None:
+    result = _run(compiler.async_compile_dag([], dry_run=True))
+    assert not result.success
+    assert result.errors
+
+
+def test_dag_cycle_is_dropped_with_warning(compiler: AnchorCompiler) -> None:
+      # ELI5: a routing cycle (a -> b -> a) is physically impossible and must be
+      # dropped with an honest warning rather than looping forever.
+    a = _device("a", [("shelly", "192.0.2.10")])
+    b = _device("b", [("shelly", "192.0.2.30")])
+    ordered, warnings = compiler._dag_topo_order([(a, b), (b, a)])
+    assert any("cycle" in w for w in warnings)

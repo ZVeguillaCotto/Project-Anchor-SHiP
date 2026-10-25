@@ -206,4 +206,80 @@ def decode_verify_19b_frame(args: dict) -> dict:
     }
 
 
-__all__ = ["decode_verify_19b_frame", "encode_19b_frame", "siphash24"]
+# ---------------------------------------------------------------------------
+# ORPHANED-MESH HEARTBEAT    (v0.1.18 — Pillar 1, Python mirror of C core)
+# ELI5: the same "is my neighbour still alive?" check that runs on the
+# hardware, in Python so the MCP diagnostic tool and the options dashboard
+# can reason about a live routing table without a radio. A hop only gets
+# refreshed by a frame that PASSED decode_verify_19b_frame(), so a replayed
+# or recorded frame can never fake a heartbeat.
+# ---------------------------------------------------------------------------
+
+# One heartbeat window. Mirrors SHIP_HEARTBEAT_INTERVAL_MS in ship_protocol.h.
+HEARTBEAT_INTERVAL_MS = 60_000
+HEARTBEAT_DEGRADED = 2     # 2 missed windows → degrade/warn
+HEARTBEAT_ORPHANED = 3     # 3+ missed windows → orphan/severed
+
+HEALTH_UNKNOWN = "unknown"
+HEALTH_HEALTHY = "healthy"
+HEALTH_DEGRADED = "degraded"
+HEALTH_ORPHANED = "orphaned"
+
+
+def heartbeat_feed(hop: dict, counter: int, local_mono_ms: int) -> dict:
+    """ELI5: mark a hop as having just heard a GENUINE frame.
+
+    In production this is only called after ``decode_verify_19b_frame``
+    accepted the frame, so the nonce/last-seen clock can never be faked by
+    a replay. Returns the updated hop dict.
+    """
+    hop["last_counter"] = counter & 0xFFFF
+    hop["last_seen_ms"] = int(local_mono_ms)
+    hop["state"] = HEALTH_HEALTHY
+    return hop
+
+
+def heartbeat_check(hop: dict, now_ms: int) -> dict:
+    """ELI5: recompute a hop health from how long since its last genuine
+    frame; return ``{"state": ..., "missed_windows": N}``.
+
+    A hop that has never been fed (``last_seen_ms`` is 0) is UNKNOWN — it
+    needs a re-handshake to establish a baseline, so it is never healthy.
+    """
+    last_seen = int(hop.get("last_seen_ms", 0))
+    if last_seen == 0:
+        state = HEALTH_UNKNOWN
+        missed = 0
+    else:
+        missed = (int(now_ms) - last_seen) // HEARTBEAT_INTERVAL_MS
+        if missed < 0:
+            missed = 0
+        if missed <= HEARTBEAT_DEGRADED - 1:
+            state = HEALTH_HEALTHY
+        elif missed == HEARTBEAT_DEGRADED:
+            state = HEALTH_DEGRADED
+        else:
+            state = HEALTH_ORPHANED
+    hop["state"] = state
+    return {"state": state, "missed_windows": missed}
+
+
+def heartbeat_rehandshake_needed(hop: dict, now_ms: int) -> bool:
+    """ELI5: True whenever a hop needs a "Re-handshake" — anything but
+    HEALTHY (unknown / degraded / orphaned). The dashboard degradation flag.
+    """
+    return heartbeat_check(hop, now_ms)["state"] != HEALTH_HEALTHY
+
+
+__all__ = [
+    "decode_verify_19b_frame",
+    "encode_19b_frame",
+    "siphash24",
+    "heartbeat_check",
+    "heartbeat_feed",
+    "heartbeat_rehandshake_needed",
+    "HEALTH_HEALTHY",
+    "HEALTH_DEGRADED",
+    "HEALTH_ORPHANED",
+    "HEALTH_UNKNOWN",
+]

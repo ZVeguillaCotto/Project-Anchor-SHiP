@@ -31,7 +31,7 @@ SHiP Anchor is verified bottom-up. All three layers run on a plain computer
 2. **Integration** (`tests/test_integration.py`) — wizard steps, the
    `.storage/ship_anchor.bindings` round-trip, and resilient `erase_all`.
    Home Assistant is stubbed by `tests/conftest.py`.
-3. **System / disaster** — the C core (`sim/test_ship_core.c`, target `10/10`)
+3. **System / disaster** — the C core (`sim/test_ship_core.c`, target `11/11`)
    and the simulation + MCP drills (`sim/run_anchor_benchmarks.py`, target
    `6/6`). These touch the real 19-byte encoder, SipHash, LEAT, Mesh-RTC, and
    radio HAL.
@@ -52,10 +52,11 @@ A mismatch is a release blocker.
   (`AnchorCompiler.build_leat_table`). Keep the LEAT row to the single
   `action_param` byte; put wider values (mireds, fade time) in the optional
   `frame_params` annotation, not the struct.
-- **MCP surface is seven tools**, all preview-only: inspect, compile,
-  `ship_bake_behavior` (LEAT), `ship_list_bindings`, encode, decode, and the
-  verification suite. Any new tool must keep the schema under the lexical
-  token ceiling asserted by Drill 6 (see `sim/run_anchor_benchmarks.py`).
+- **MCP surface is eight tools**, all preview-only: inspect, compile,
+  `ship_bake_behavior` (LEAT), `ship_list_bindings`, encode, decode, the
+  verification suite, and the v0.1.18 `ship_diagnose_mesh` mesh diagnostic.
+  Any new tool must keep the schema under the lexical token ceiling asserted by
+  Drill 6 (see `sim/run_anchor_benchmarks.py`).
 
 ## v0.1.14 — Bidirectional Wizard & Multi-Hop Canopy (read before the wizard or compiler)
 
@@ -136,3 +137,30 @@ them to protocol units:
    370 mireds, 50 % → 127, clamping, inverses, back-compat); the dashboard and
    integration tests feed human units and assert the translated protocol
    values. Total **74 passed**.
+
+## v0.1.18 — Advanced Mesh Resilience, DAG Branching & 8th MCP Diagnostic (read before the compiler or MCP)
+
+- **Pillar 1 — Orphaned Mesh Heartbeat** (`ship_protocol.h/.c` +
+  `custom_components/ship_anchor/ship_protocol.py`): every hop remembers when it
+  last heard a *genuine* frame; the gap yields a health verdict —
+  `ship_hb_health_t` = UNKNOWN / HEALTHY / DEGRADED / ORPHANED
+   (`ship_heartbeat_feed` / `ship_heartbeat_check` /
+  `ship_heartbeat_rehandshake_needed`). The options-flow dashboard renders a
+  per-hop degradation flag with a **"Re-handshake"** action that heals severed
+  hops.
+- **Pillar 2 — Multi-Zone DAG Branching** (`compiler.py`):
+   `async_compile_multihop` now delegates to `async_compile_dag(dag, rules,
+  dry_run, group_name)`, which accepts adjacency-mappings, node-with-children,
+   2-tuples, or `{parent/child}` / `{source/target}` shapes, topologically
+  orders branches (cycles dropped with a warning), tags each hop with
+   `hop_index` + `zone`, and — "one severed zone must not blind the others" — a
+  broken branch is reported but does **not** abort the rest.
+- **Pillar 3 — 8th MCP tool `ship_diagnose_mesh`** (`mcp/ship_anchor_mcp.py`):
+  a read-only "is my mesh alive?" diagnostic — per-hop verdict,
+  orphaned/degraded counts, a re-handshake flag, and a modeled latency
+   (`hop_count × 0.864 ms`). The surface is now **eight tools**, under the
+   **1,500**-token tripwire (measured **1,405**).
+- **Tests:** `tests/test_heartbeat_unit.py` (6), 5 DAG tests in
+   `tests/test_multihop_unit.py`, `tests/test_mcp_unit.py` (6). Drill 6 asserts
+  the full eight-tool surface. The 19-byte frame, SipHash, LEAT, and Mesh-RTC
+  are **unchanged**; the C suite is now **11/11**.

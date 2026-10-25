@@ -369,3 +369,64 @@ uint32_t ship_rtc_now(const ship_mesh_rtc_t *rtc, uint32_t local_mono_ms)
     uint32_t elapsed_s = (local_mono_ms - rtc->last_sync_ms) / 1000UL;
     return rtc->utc_epoch + elapsed_s;
 }
+
+/* ============================================================================
+ * ORPHANED-MESH HEARTBEAT  (v0.1.18 — Pillar 1)
+ * ELI5: The "liveness" layer for a multi-hop chain. Each hop only refreshes
+ *       its last-seen clock when a frame has ALREADY passed ship_frame_decode()
+ *       (magic + SipHash + anti-replay). A recorded/replayed frame never
+ *       reaches ship_heartbeat_feed(), so it can never fake a heartbeat. From
+ *       the gap since the last genuine frame we derive HEALTHY / DEGRADED /
+ *       ORPHANED, which the UI turns into a degradation flag + "Re-handshake".
+ * ============================================================================ */
+
+void ship_heartbeat_feed(ship_hb_state_t *hop,
+                         uint16_t counter,
+                         uint32_t local_mono_ms)
+{
+    if (!hop) return;
+    /* A genuine frame just arrived (decode already passed) — mark it fresh. */
+    hop->last_counter= counter;
+    hop->last_seen_ms = local_mono_ms;
+    hop->state = SHIP_HB_HEALTHY;
+}
+
+ship_hb_health_t ship_heartbeat_check(ship_hb_state_t *hop,
+                                      uint32_t now_ms,
+                                      uint32_t *out_missed)
+{
+    ship_hb_health_t state;
+    uint32_t missed = 0;
+
+    if (!hop) {
+        if (out_missed) *out_missed = 0;
+        return SHIP_HB_UNKNOWN;
+    }
+
+     /* ELI5: how many heartbeat windows have elapsed since the last genuine
+       * frame. A hop that has never heard one (last_seen_ms == 0) is UNKNOWN —
+       * it needs a re-handshake to establish its baseline, so it is never
+       * reported HEALTHY. */
+    if (hop->last_seen_ms == 0) {
+        state = SHIP_HB_UNKNOWN;
+     } else {
+        uint64_t elapsed = (uint64_t)now_ms - (uint64_t)hop->last_seen_ms;
+        missed = (uint32_t)(elapsed / SHIP_HEARTBEAT_INTERVAL_MS);
+        if (missed <= (SHIP_HEARTBEAT_DEGRADED - 1)) {
+            state = SHIP_HB_HEALTHY;
+          } else if (missed == SHIP_HEARTBEAT_DEGRADED) {
+            state = SHIP_HB_DEGRADED;
+          } else {
+            state = SHIP_HB_ORPHANED;
+          }
+     }
+    hop->state = state;
+    if (out_missed) *out_missed = missed;
+    return state;
+}
+
+bool ship_heartbeat_rehandshake_needed(const ship_hb_state_t *hop, uint32_t now_ms)
+{
+    if (!hop) return true;
+    return ship_heartbeat_check((ship_hb_state_t *)hop, now_ms, NULL) != SHIP_HB_HEALTHY;
+}

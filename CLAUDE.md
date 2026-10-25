@@ -197,6 +197,41 @@ translate them to the protocol units the hardware expects:
    integration tests feed human units and assert the translated protocol
    values. Total **74 passed**.
 
+### v0.1.17 — Date-Stamped Architectural Decision Record
+
+No new runtime surface. The project's chronological history was fossilized into
+  [`ARCH_DECISIONS.md`](ARCH_DECISIONS.md) (self-contained, date-stamped,
+milestone-by-milestone) and `CLAUDE.md` / `AGENTS.md` / `README.md` /
+`GUIDE_FOR_HUMANS.md` were pointed at it, so a clean public launch that resets
+the git history can no longer erase *why* each design choice was made.
+
+### v0.1.18 — Advanced Mesh Resilience, DAG Branching & 8th MCP Diagnostic
+
+- **Pillar 1 — Orphaned Mesh Heartbeat** (`ship_protocol.h/.c` + `ship_protocol.py`):
+  every hop remembers when it last heard a *genuine* frame; the gap since yields a
+  health verdict — `ship_hb_health_t` = UNKNOWN / HEALTHY / DEGRADED / ORPHANED.
+   `ship_heartbeat_feed` / `ship_heartbeat_check` /
+   `ship_heartbeat_rehandshake_needed` (11/11 C tests). The options-flow dashboard
+   renders a per-hop degradation flag with a **"Re-handshake"** action that heals
+  severed hops.
+- **Pillar 2 — Multi-Zone DAG Branching** (`compiler.py`):
+   `async_compile_multihop` was refactored into a **DAG** via the new
+   `async_compile_dag(dag, rules, dry_run, group_name)`. It accepts
+  adjacency-mappings, node-with-children, 2-tuples, or
+   `{parent/child}` / `{source/target}` shapes, topologically orders branches
+  (cycles dropped with a warning), tags each hop with `hop_index` + `zone`, and —
+   "one severed zone must not blind the others" — a broken branch is reported but
+  does **not** abort the rest.
+- **Pillar 3 — 8th MCP tool `ship_diagnose_mesh`** (`mcp/ship_anchor_mcp.py`):
+  a read-only "is my mesh alive?" diagnostic — per-hop verdict,
+   orphaned/degraded counts, a re-handshake flag, and a modeled latency
+    (`hop_count × 0.864 ms`). The MCP surface is now **eight tools**, still
+   under the **1,500**-token tripwire (measured **1,405**).
+- **Tests:** `tests/test_heartbeat_unit.py` (6), 5 DAG tests in
+   `tests/test_multihop_unit.py`, `tests/test_mcp_unit.py` (6). Drill 6 asserts
+  the full eight-tool surface. The 19-byte frame, SipHash, LEAT, and Mesh-RTC are
+  **unchanged**; the LEAT row stays rigid.
+
 ### Repository map
 
 | Path | Purpose |
@@ -214,7 +249,7 @@ translate them to the protocol units the hardware expects:
 | `custom_components/ship_anchor/config_flow.py` | Bidirectional wizard (direction → anchor → other-end → behavior → canopy → finish), visual options-flow dashboard & LEAT inspector |
 | `custom_components/ship_anchor/automation.py` | HA automation normalization + entity-registry protocol fallback |
 | `custom_components/ship_anchor/manifest.json` | Home Assistant integration metadata |
-| `mcp/ship_anchor_mcp.py` | Seven-tool MCP stdio server (inspect, compile, bake LEAT, list bindings, encode/decode, verify), CLI, and demo |
+| `mcp/ship_anchor_mcp.py` | Eight-tool MCP stdio server (inspect, compile, bake LEAT, list bindings, encode/decode, verify, + v0.1.18 `ship_diagnose_mesh` mesh diagnostic), CLI, and demo |
 | `sim/test_ship_core.c` | C protocol, clock round-trip, and native HAL tests |
 | `sim/check_ship_fastpath_compile.py` | Host-side ESPHome component compile/link smoke test |
 | `sim/run_anchor_benchmarks.py` | Six Python verification and disaster drills |
@@ -227,7 +262,9 @@ translate them to the protocol units the hardware expects:
 | `tests/test_compiler_unit.py` | **Layer 1** — pure-logic tests for the LEAT builder and rule domain/action mapping |
 | `tests/test_config_flow_unit.py` | **Layer 1** — protocol-match, target-kind, capability, and protocol-inference unit tests |
 | `tests/test_integration.py` | **Layer 2** — wizard steps, `.storage/ship_anchor.bindings` round-trip, and resilient `erase_all` |
-| `tests/test_multihop_unit.py` | **Layer 1** — `_hop_protocol`, `_hop_source_config`, and `async_compile_multihop` chain tests |
+| `tests/test_multihop_unit.py` | **Layer 1** — `_hop_protocol`, `_hop_source_config`, `async_compile_multihop` chain tests, and the v0.1.18 DAG branch tests |
+| `tests/test_heartbeat_unit.py` | **Layer 1** — orphaned-mesh heartbeat verdicts (UNKNOWN / HEALTHY / DEGRADED / ORPHANED) and the re-handshake flag |
+| `tests/test_mcp_unit.py` | **Layer 1** — the eight-tool MCP surface and the v0.1.18 `ship_diagnose_mesh` diagnostic verdicts |
 | `tests/test_options_dashboard.py` | **Layer 1 + 2** — ELI5 rule translation and the visual options-flow dashboard (add/delete rule, delete binding, erase-all) |
 
 ### Testing Pyramid
@@ -238,9 +275,9 @@ no radios, no network) until the very top:
 
 | Layer | What it is | Command | Target |
 |---|---|---|---|
-| **1 — Unit** | Fast, isolated tests of pure logic: `_device_protocols_match()`, `_target_kind()`, `_infer_protocol()`, `TARGET_CAPABILITIES`, the LEAT row mapping (`build_leat_table()`, `_rule_domain()`, `_rule_action()`), the multi-hop chain compiler, and the options-dashboard ELI5 rule translators. No HA, no I/O. | `python3 -m pytest tests/ -v` | 74 passed (all layers combined) |
+| **1 — Unit** | Fast, isolated tests of pure logic: `_device_protocols_match()`, `_target_kind()`, `_infer_protocol()`, `TARGET_CAPABILITIES`, the LEAT row mapping (`build_leat_table()`, `_rule_domain()`, `_rule_action()`), the multi-hop chain + DAG compiler, the v0.1.18 orphaned-mesh heartbeat verdicts, the options-dashboard ELI5 rule translators, and the eight-tool MCP surface. No HA, no I/O. | `python3 -m pytest tests/ -v` | 92 passed (all layers combined) |
 | **2 — Integration** | Component tests that wire the wizard, the persistent store (`.storage/ship_anchor.bindings`), and `AnchorCompiler` together: cross-protocol source filtering, full target→source→behaviour→finish flow, JSON serialisation round-trip, and the resilient `erase_all`. | `python3 -m pytest tests/ -v` | (included above) |
-| **3 — System / disaster** | The C protocol core (`test_ship_core.c`) and the Python simulation + MCP disaster drills (`run_anchor_benchmarks.py`), which *do* touch the real 19-byte encoder, SipHash, LEAT, Mesh-RTC, and radio HAL. | `gcc … && /tmp/test_ship_core` and `python3 sim/run_anchor_benchmarks.py` | 10/10 and 6/6 |
+| **3 — System / disaster** | The C protocol core (`test_ship_core.c`) and the Python simulation + MCP disaster drills (`run_anchor_benchmarks.py`), which *do* touch the real 19-byte encoder, SipHash, LEAT, Mesh-RTC, and radio HAL. | `gcc … && /tmp/test_ship_core` and `python3 sim/run_anchor_benchmarks.py` | 11/11 and 6/6 |
 
 The base is wide and cheap (run on every change); the top is narrow and
 expensive (run before release). **The invariant to protect:** the LEAT rows
@@ -259,7 +296,7 @@ release blocker.
 ```bash
 # Layer 1 + 2 — unit and integration (needs `pip install pytest`)
 python3 -m pytest tests/ -v
-# Layer 3 — C protocol core (10/10) and simulation/MCP disaster drills (6/6)
+# Layer 3 — C protocol core (11/11) and simulation/MCP disaster drills (6/6)
 gcc -Wall -Wextra -Werror -std=c11 -DSHIP_PLATFORM_NATIVE \
   -I src/ship_core sim/test_ship_core.c \
   src/ship_core/ship_protocol.c src/ship_core/ship_radio_hal.c \
@@ -275,5 +312,6 @@ Use `python3 sim/run_anchor_benchmarks.py --skip-mcp` for the C suite and
 Drills 1–5 without starting the MCP demo. The MCP schema check reports an exact
 lexical-token count over compact JSON against a tripwire ceiling (currently
 1,500; raised from 1,000 in v0.1.11 when two tools were added); model-specific
-tokenizers can count different units. Drill 6 asserts the full seven-tool
-surface and exercises `ship_bake_behavior` and `ship_list_bindings`.
+tokenizers can count different units. Drill 6 asserts the full eight-tool
+surface and exercises `ship_bake_behavior`, `ship_list_bindings`, and the
+v0.1.18 `ship_diagnose_mesh` mesh diagnostic.

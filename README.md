@@ -137,7 +137,7 @@ byte 18 for the low 8 bits of SipHash over bytes 9..17.
 [TEST 10] test_bad_magic_rejection
   Bad magic and HMAC tamper rejection verified  ✓  [PASS]
 
-RESULTS: 10/10 tests passed  — ALL PASS ✓
+RESULTS: 11/11 tests passed    — ALL PASS ✓
 =================================================================
 ```
 
@@ -170,12 +170,12 @@ DRILL 5 — 30-Light Goodnight Scene
   50-node recovery: simultaneous collisions → 0 unresolved after jittered retry
 
 FINAL REPORT:
-  ✓  Drill 1: C Core + Radio HAL (10/10 C unit tests)
+  ✓  Drill 1: C Core + Radio HAL (11/11 C unit tests)
   ✓  Drill 2: Tier 1 Compiler (ZHA membership, Matter 2-step, ZWLR block)
   ✓  Drill 3: Water Leak Reflex (~0.88 ms modeled estimate)
   ✓  Drill 4: 5×-Click Scene + 2:00 AM Mesh-RTC Nightlight
   ✓  Drill 5: 30-Device Storm & 50-Node Recovery
-  ✓  Drill 6: Seven MCP tools and <1,500 lexical schema tokens
+  ✓  Drill 6: Eight MCP tools and <1,500 lexical schema tokens
 
   ALL 6/6 DRILLS PASSED ✓
   Simulation checks passed — real Home Assistant and hardware validation remain.
@@ -215,9 +215,9 @@ project-anchor-ship/
 │       ├── strings.json                          ← Localised wizard strings (ELI5)
 │       └── compiler.py                           ← Multi-protocol Compiler + LEAT builder
 ├── mcp/
-│   └── ship_anchor_mcp.py                        ← Seven-tool stdio MCP server + CLI
+│   └── ship_anchor_mcp.py                          ← Eight-tool stdio MCP server + CLI
 └── sim/
-    ├── test_ship_core.c                          ← 10 C unit tests (gcc/clang)
+      ├── test_ship_core.c                            ← 11 C unit tests (gcc/clang)
     ├── check_ship_fastpath_compile.py            ← ESPHome C++ protocol/HAL link check
     └── run_anchor_benchmarks.py                  ← Six-drill simulator
 ```
@@ -286,7 +286,8 @@ python3 mcp/ship_anchor_mcp.py
 ```
 
 For local smoke tests, list the compact tool schemas, call one tool, or exercise
-all seven tools (including the nested verification-suite run):
+all eight tools (including the nested verification-suite run and the mesh
+diagnostic):
 
 ```bash
 python3 mcp/ship_anchor_mcp.py --cli

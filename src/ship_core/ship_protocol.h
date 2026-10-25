@@ -198,7 +198,50 @@ typedef struct {
 
 #define SHIP_RTC_SYNC_INTERVAL_S   60u   /* Broadcast RTC sync every 60 seconds          */
 #define SHIP_RTC_MAX_DRIFT_S        2u   /* Accept correction if drift ≥ 2 seconds        */
+/* ============================================================================
+ * ORPHANED-MESH HEARTBEAT  (v0.1.18 — Pillar 1)
+ * ELI5: A multi-hop chain only works while every link still hears the next
+ * device. A "heartbeat" is each hop remembering *when* it last heard a
+ * genuine (HMAC-checked) frame. If a relay goes quiet for too long, the hop
+ * ahead of it cannot tell "the relay is asleep" from "the relay is dead" —
+ * so the whole downstream branch silently goes dark. To catch that, every hop
+ * counts how many heartbeat intervals it has MISSED since the last genuine
+ * frame. Missed 0–1 intervals → HEALTHY; 2 → DEGRADED (warn the user); 3 or
+ * more → ORPHANED (the branch is severed, flag it and offer a re-handshake).
+ *
+ * The "cryptographic" half is that a hop only refreshes its last-seen clock
+ * when a frame PAST ship_frame_decode() — i.e. its SipHash tag matched and its
+ * replay nonce advanced — so a recorded/replayed frame can never fake a
+ * heartbeat. A hop is "re-handshake-able" whenever its state is anything but
+ * HEALTHY: the UI then shows a degradation flag and a "Re-handshake" action.
+ * ============================================================================ */
 
+/* ELI5: how often a genuine frame must arrive. Mirrors the 60s Mesh-RTC
+ * sync so a single heartbeat budget covers one clock-sync period. */
+#define SHIP_HEARTBEAT_INTERVAL_MS  60000u /* One heartbeat window = 60 s            */
+/* ELI5: thresholds, expressed as a number of MISSED intervals. 0–1 missed =
+ * healthy, 2 missed = degraded (warn), 3+ missed = orphaned (severed). */
+#define SHIP_HEARTBEAT_DEGRADED   2u       /* 2 missed intervals → degrade/warn      */
+#define SHIP_HEARTBEAT_ORPHANED   3u       /* 3 missed intervals → orphan/severed     */
+
+/* ELI5: the four health states a hop can be in. */
+typedef enum {
+    SHIP_HB_UNKNOWN   = 0,    /* Never heard a genuine frame yet           */
+    SHIP_HB_HEALTHY   = 1,    /* Heard a genuine frame within 1 window     */
+    SHIP_HB_DEGRADED = 2,     /* Heard a frame 2 windows ago — warn        */
+    SHIP_HB_ORPHANED = 3,     /* Heard a frame 3+ windows ago — severed    */
+} ship_hb_health_t;
+
+/* ELI5: one row in the live routing/heartbeat table. Each hop remembers the
+ * last genuine frame it heard (its nonce + local timestamp) and caches its
+ * health verdict. This is what ship_diagnose_mesh reads and the dashboard
+ * turns into a degradation flag. */
+typedef struct {
+    uint16_t        hop_index;    /* Which hop in the chain/DAG (1-based)    */
+    uint16_t        last_counter; /* Last accepted anti-replay nonce         */
+    uint32_t        last_seen_ms; /* Local monotonic ms of last genuine frame*/
+    ship_hb_health_t state;        /* Cached health verdict (0..3 above)     */
+} ship_hb_state_t;
 /* ============================================================================
  * SIPHASH-2-4 KEY SIZE
  * ELI5: The secret key is 16 bytes (128 bits) shared among devices in a group.
@@ -347,6 +390,48 @@ void ship_rtc_update(ship_mesh_rtc_t *rtc,
  *       local time.
  */
 uint32_t ship_rtc_now(const ship_mesh_rtc_t *rtc, uint32_t local_mono_ms);
+
+/* ============================================================================
+ * ORPHANED-MESH HEARTBEAT FUNCTION DECLARATIONS  (v0.1.18 — Pillar 1)
+ * ============================================================================ */
+
+/**
+ * ship_heartbeat_feed()
+ * ELI5: Called by a hop only AFTER a frame has cleared ship_frame_decode()
+ *       (magic + SipHash + anti-replay all passed). It refreshes the hop's
+ *       "last genuine frame" clock and nonce and marks the hop HEALTHY. This
+ *       is the cryptographic half: a replayed/recorded frame never reaches
+ *       here, so it can never fake a heartbeat.
+ *
+ * @param hop          The per-hop heartbeat state (updated in place).
+ * @param counter      The frame's accepted replay counter (the nonce).
+ * @param local_mono_ms Local monotonic time in milliseconds.
+ */
+void ship_heartbeat_feed(ship_hb_state_t *hop,
+                          uint16_t counter,
+                          uint32_t local_mono_ms);
+
+/**
+ * ship_heartbeat_check()
+ * ELI5: Recompute a hop's health from how long ago its last genuine frame was.
+ *       Returns the new state and, if asked, the number of missed intervals.
+ *
+ * @param hop          The per-hop heartbeat state (state field updated).
+ * @param now_ms       Current local monotonic time in milliseconds.
+ * @param out_missed   Optional; if non-NULL, receives the missed-window count.
+ * @return             The new ship_hb_health_t for this hop.
+ */
+ship_hb_health_t ship_heartbeat_check(ship_hb_state_t *hop,
+                                       uint32_t now_ms,
+                                       uint32_t *out_missed);
+
+/**
+ * ship_heartbeat_rehandshake_needed()
+ * ELI5: True when a hop needs a "Re-handshake" — i.e. it is anything but
+ *       HEALTHY (unknown / degraded / orphaned). The UI uses this to light the
+ *       degradation flag and offer the re-handshake action.
+ */
+bool ship_heartbeat_rehandshake_needed(const ship_hb_state_t *hop, uint32_t now_ms);
 
 #ifdef __cplusplus
 }

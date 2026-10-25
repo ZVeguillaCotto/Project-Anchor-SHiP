@@ -41,8 +41,9 @@ THE SIX DRILLS:
     Compare Matter and SHiP unicast sweeps with a one-frame SHiP group broadcast.
 
   DRILL 6 — MCP SERVER:
-    Exercise all seven MCP tools, including the verification-suite tool, and
-    check the compact schema stays below its lexical-token ceiling.
+    Exercise all eight MCP tools, including the verification-suite tool and the
+    v0.1.18 mesh diagnostic (ship_diagnose_mesh), and check the compact schema
+    stays below its lexical-token ceiling.
 
 ============================================================================
 
@@ -966,11 +967,12 @@ def drill_6_mcp_server() -> TestResult:
         "ship_encode_19b_frame",
         "ship_decode_verify_19b_frame",
         "ship_run_verification_suite",
+        "ship_diagnose_mesh",
     }
     # ELI5: the schema has a size guard so an accidental bloat is caught.
-    # v0.1.11 added two tools (ship_bake_behavior, ship_list_bindings), so
-    # the ceiling moved from 1,000 to 1,500 lexical tokens. This is a
-    # tripwire, not a protocol requirement.
+    # v0.1.11 added two tools (ship_bake_behavior, ship_list_bindings);
+    # v0.1.18 added the eighth tool (ship_diagnose_mesh). The ceiling is
+    # 1,500 lexical tokens. This is a tripwire, not a protocol requirement.
     token_ceiling = 1500
     token_count = report.get("schema_token_count", 0)
     inspected = tools.get("ship_inspect_device", {})
@@ -985,6 +987,7 @@ def drill_6_mcp_server() -> TestResult:
     listed = tools.get("ship_list_bindings", {})
     rtc_round_trip = report.get("mesh_rtc_round_trip", {})
     suite = tools.get("ship_run_verification_suite", {})
+    diagnose = tools.get("ship_diagnose_mesh", {})
     passed = (
         set(tools) == expected_tools
         and token_count < token_ceiling
@@ -997,6 +1000,7 @@ def drill_6_mcp_server() -> TestResult:
         and suite.get("passed") is True
         and baked.get("row_count", 0) >= 1
         and listed.get("count", 0) >= 1
+        and diagnose.get("hop_count", 0) >= 1
     )
     details = [
         ok("ship_fastpath.cpp compiled and linked with protocol + HAL")
@@ -1016,6 +1020,9 @@ def drill_6_mcp_server() -> TestResult:
         and rtc_round_trip.get("decoded", {}).get("utc_epoch") == 1700000000
         and suite.get("passed") is True
         else fail("Frame, Mesh-RTC, or suite MCP tool failed"),
+        ok("Mesh diagnostic tool reported {} hop(s)".format(diagnose.get("hop_count", 0)))
+        if diagnose.get("hop_count", 0) >= 1
+        else fail("Mesh diagnostic tool returned no hops"),
     ]
     return TestResult("Drill 6 — ESPHome Seam & MCP Server", passed, details)
 

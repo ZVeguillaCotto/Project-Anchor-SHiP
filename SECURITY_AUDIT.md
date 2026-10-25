@@ -109,7 +109,7 @@ asserts the new clean-completion contract.
 
 | Check | Command | Result |
 |---|---|---|
-| C protocol suite | `gcc … sim/test_ship_core.c … && /tmp/test_ship_core` | **10/10 pass** |
+| C protocol suite | `gcc … sim/test_ship_core.c … && /tmp/test_ship_core` | **11/11 pass** |
 | Six disaster drills | `python3 sim/run_anchor_benchmarks.py` | **ALL 6/6 pass** |
 | Injection guards | ad-hoc test: `group_name="grp;Reboot"`, `target_command='on";x()'` | **both rejected** with clean per-binding errors |
 | Compile/link seam | `sim/check_ship_fastpath_compile.py` (run inside Drill 6) | pass |

@@ -562,6 +562,74 @@ static bool test_bad_magic_rejection(void)
 }
 
 /* ============================================================================
+ * TEST 11: ORPHANED-MESH HEARTBEAT (v0.1.18 — Pillar 1)
+ * ELI5: A hop only refreshes when a GENUINE frame (one that passed decode)
+ *       arrives. From the gap since the last genuine frame we derive
+ *       HEALTHY / DEGRADED / ORPHANED. A fresh feed → HEALTHY; 2 missed
+ *       windows → DEGRADED; 3+ missed windows → ORPHANED; a hop that has
+ *       never heard anything → UNKNOWN. Every non-HEALTHY state needs a
+ *       "Re-handshake".
+ * ============================================================================ */
+static bool test_heartbeat_orphan_detection(void)
+{
+    ship_hb_state_t hop;
+    uint32_t missed = 0xDEAD;   /* poison value to prove out_missed is written */
+
+     /* A hop that has never heard a genuine frame is UNKNOWN. */
+    ship_hb_state_t unknown;
+    memset(&unknown, 0, sizeof(unknown));
+    ship_heartbeat_check(&unknown, 1000u, &missed);
+    TEST_ASSERT(unknown.state == SHIP_HB_UNKNOWN,
+        "Unfed hop must be UNKNOWN");
+    TEST_ASSERT(missed == 0, "UNKNOWN hop must report 0 missed windows");
+    TEST_ASSERT(ship_heartbeat_rehandshake_needed(&unknown, 1000u) == true,
+        "UNKNOWN hop must need a re-handshake");
+
+     /* A fresh genuine frame marks the hop HEALTHY. */
+    ship_heartbeat_feed(&hop, 10, 10000u);
+    ship_hb_health_t s = ship_heartbeat_check(&hop, 10000u, &missed);
+    TEST_ASSERT(s == SHIP_HB_HEALTHY, "Fresh feed must be HEALTHY");
+    TEST_ASSERT(missed == 0, "Healthy hop must report 0 missed windows");
+    TEST_ASSERT(ship_heartbeat_rehandshake_needed(&hop, 10000u) == false,
+        "Healthy hop must NOT need a re-handshake");
+
+     /* 2 missed windows → DEGRADED (warn the user). */
+    ship_hb_health_t s2 = ship_heartbeat_check(&hop,
+        10000u + 2u * SHIP_HEARTBEAT_INTERVAL_MS, &missed);
+    TEST_ASSERT(s2 == SHIP_HB_DEGRADED, "2 missed windows must be DEGRADED");
+    TEST_ASSERT(missed == 2, "DEGRADED must report exactly 2 missed windows");
+    TEST_ASSERT(ship_heartbeat_rehandshake_needed(&hop,
+        10000u + 2u * SHIP_HEARTBEAT_INTERVAL_MS) == true,
+        "DEGRADED hop must need a re-handshake");
+
+     /* 3 missed windows → ORPHANED (severed branch). */
+    ship_hb_health_t s3 = ship_heartbeat_check(&hop,
+        10000u + 3u * SHIP_HEARTBEAT_INTERVAL_MS, &missed);
+    TEST_ASSERT(s3 == SHIP_HB_ORPHANED, "3 missed windows must be ORPHANED");
+    TEST_ASSERT(missed == 3, "ORPHANED must report exactly 3 missed windows");
+    TEST_ASSERT(ship_heartbeat_rehandshake_needed(&hop,
+        10000u + 3u * SHIP_HEARTBEAT_INTERVAL_MS) == true,
+        "ORPHANED hop must need a re-handshake");
+
+     /* A later genuine frame heals the hop back to HEALTHY. */
+    uint32_t later = 10000u + 3u * SHIP_HEARTBEAT_INTERVAL_MS;
+    ship_heartbeat_feed(&hop, 11, later);
+    ship_hb_health_t s4 = ship_heartbeat_check(&hop, later, &missed);
+    TEST_ASSERT(s4 == SHIP_HB_HEALTHY, "A fresh feed must heal the hop");
+    TEST_ASSERT(ship_heartbeat_rehandshake_needed(&hop, later) == false,
+        "A healed hop must NOT need a re-handshake");
+
+     /* NULL pointer safety. */
+    TEST_ASSERT(ship_heartbeat_check(NULL, 0, &missed) == SHIP_HB_UNKNOWN,
+        "NULL hop must report UNKNOWN");
+    TEST_ASSERT(ship_heartbeat_rehandshake_needed(NULL, 0) == true,
+        "NULL hop must report re-handshake needed");
+
+    printf("  Orphaned-mesh heartbeat (HEALTHY/DEGRADED/ORPHANED/UNKNOWN) ✓\n");
+    return true;
+}
+
+/* ============================================================================
  * MAIN — Run all tests and print summary
  * ============================================================================ */
 int main(void)
@@ -581,6 +649,7 @@ int main(void)
     RUN_TEST(test_leat_matching);
     RUN_TEST(test_nostatus_share_flag);
     RUN_TEST(test_bad_magic_rejection);
+    RUN_TEST(test_heartbeat_orphan_detection);
 
     printf("\n=================================================================\n");
     printf("  RESULTS: %d/%d tests passed", tests_passed, tests_run);

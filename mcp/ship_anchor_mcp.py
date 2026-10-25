@@ -10,10 +10,10 @@ available without making the assistant read every project file.
 
 LAYER 2 — THE UNDER-THE-HOOD IMPLEMENTATION
 Python 3.9+, standard library only. The server speaks newline-delimited
-JSON-RPC over stdio, exposes seven MCP tools (device inspection, binding
-preview, LEAT behaviour baking, binding inventory, 19-byte encode/decode, and
-the verification suite), and includes CLI and demo modes. Every tool is
-preview-only — none of them actuate real devices.
+JSON-RPC over stdio, exposes eight MCP tools (device inspection, binding
+preview, LEAT behaviour baking, binding inventory, 19-byte encode/decode, the
+verification suite, and the v0.1.18 mesh diagnostic), and includes CLI and
+demo modes. Every tool is preview-only — none of them actuate real devices.
 """
 
 from __future__ import annotations
@@ -133,6 +133,29 @@ TOOL_DEFINITIONS = [
         "description": "Run the linked C tests and Python disaster drills; return pass/fail.",
         "inputSchema": {"type": "object", "properties": {}},
     },
+     {
+         "name": "ship_diagnose_mesh",
+         "description": "Diagnose a live mesh from per-hop heartbeat + anti-replay nonce state (v0.1.18). Returns per-hop health (healthy/degraded/orphaned/unknown), a re-handshake flag, and a modeled multi-hop latency. Preview only, never actuates.",
+         "inputSchema": {
+             "type": "object",
+             "properties": {
+                 "hops": {
+                     "type": "array",
+                     "items": {
+                         "type": "object",
+                         "properties": {
+                             "hop_index": {"type": "integer", "minimum": 0},
+                             "last_counter": {"type": "integer", "minimum": 0, "maximum": 65535},
+                             "last_seen_ms": {"type": "integer", "minimum": 0},
+                         },
+                         "required": ["last_seen_ms"],
+                     },
+                 },
+                 "now_ms": {"type": "integer", "minimum": 0},
+             },
+             "required": ["hops"],
+         },
+     },
 ]
 
 
@@ -141,10 +164,11 @@ def _schema_token_count() -> int:
     serialized = json.dumps(TOOL_DEFINITIONS, separators=(",", ":"), sort_keys=True)
     return len(re.findall(r"[A-Za-z0-9_]+|[^\sA-Za-z0-9_]", serialized))
 
-
 from custom_components.ship_anchor.ship_protocol import (
     decode_verify_19b_frame as ship_decode_verify_19b_frame,
     encode_19b_frame as ship_encode_19b_frame,
+    heartbeat_check,
+    heartbeat_rehandshake_needed,
 )
 
 
@@ -267,9 +291,81 @@ async def _call_tool(name: str, arguments: dict) -> Any:
             "python_drills": drill_summary.group(0) if drill_summary else
                 "Python drill summary unavailable",
         }
-    raise ValueError("Unknown SHiP MCP tool: {}".format(name))
 
+    if name == "ship_diagnose_mesh":
+         # ELI5: the "is my mesh still alive?" tool. It reads the per-hop
+         # heartbeat snapshot (when each hop last heard a GENUINE frame, its
+         # anti-replay nonce) and reports a health verdict for every hop —
+         # healthy / degraded / orphaned / unknown — plus whether any branch
+         # needs a re-handshake, and a modeled multi-hop latency. It is a
+         # pure preview: it only reads, it never touches a device.
+        hops = arguments.get("hops") or []
+        if not isinstance(hops, list):
+            raise ValueError("hops must be an array of hop heartbeat objects")
+        now_ms = int(arguments.get("now_ms", 0))
 
+        hop_reports: list[dict] = []
+        orphaned = 0
+        degraded = 0
+        needs_rehandshake = False
+        for raw in hops:
+            if not isinstance(raw, dict):
+                raise ValueError("each hop must be an object")
+            hop = dict(raw)
+            hop.setdefault("hop_index", 0)
+            hop.setdefault("last_counter", 0)
+            hop.setdefault("last_seen_ms", 0)
+            check = heartbeat_check(hop, now_ms)
+            state = check["state"]
+            rehand = heartbeat_rehandshake_needed(hop, now_ms)
+            if rehand:
+                needs_rehandshake = True
+            if state == "orphaned":
+                orphaned += 1
+            elif state == "degraded":
+                degraded += 1
+            hop_reports.append({
+                 "hop_index": int(hop.get("hop_index", 0)),
+                 "last_counter": int(hop.get("last_counter", 0)),
+                 "missed_windows": check["missed_windows"],
+                 "state": state,
+                 "re_handshake_needed": rehand,
+             })
+
+        # ELI5: model the multi-hop latency. Each hop costs one 19-byte SHiP
+        # frame on the air (0.864 ms @ 250 kbps, see the C core); a chain of N
+        # hops is the sum of those per-hop airtimes plus a small per-hop
+        # coordination slack, so the user sees the round-trip a gesture pays.
+        per_hop_ms = 0.864
+        coordination_slack_ms = 0.5
+        hop_count = max(len(hops), 0)
+        modeled_latency_ms = round(
+             hop_count * per_hop_ms + (hop_count - 1 if hop_count else 0)
+             * coordination_slack_ms,
+             3,
+         )
+
+        if not hop_reports:
+            verdict = "no hops supplied — nothing to diagnose"
+        elif needs_rehandshake:
+            verdict = (
+                 "{} orphaned, {} degraded branch(es) need a re-handshake"
+             ).format(orphaned, degraded)
+        else:
+            verdict = "all {} hop(s) healthy".format(hop_count)
+
+        return {
+             "eli5_summary": "Mesh diagnostic: {}".format(verdict),
+             "verdict": verdict,
+             "hop_count": hop_count,
+             "orphaned_hops": orphaned,
+             "degraded_hops": degraded,
+             "needs_re_handshake": needs_rehandshake,
+             "modeled_latency_ms": modeled_latency_ms,
+             "per_hop_airtime_ms": per_hop_ms,
+             "now_ms": now_ms,
+             "hops": hop_reports,
+         }
 async def _run_demo() -> dict:
     # >>> MOCK TEST VECTOR ONLY <<< — a well-known placeholder key used purely
     # so the demo produces a deterministic, reproducible frame. It is NOT a
@@ -358,7 +454,15 @@ async def _run_demo() -> dict:
             "last_counter": 9,
         }),
         ("ship_run_verification_suite", {}),
-    ]
+         ("ship_diagnose_mesh", {
+              "now_ms": 240000,
+              "hops": [
+                   {"hop_index": 1, "last_counter": 41, "last_seen_ms": 240000},
+                   {"hop_index": 2, "last_counter": 39, "last_seen_ms": 120000},
+                   {"hop_index": 3, "last_counter": 12, "last_seen_ms": 60000},
+             ],
+          }),
+      ]
     results = {}
     for name, arguments in calls:
         results[name] = await _call_tool(name, arguments)
@@ -385,7 +489,7 @@ async def _dispatch(request: dict) -> Optional[dict]:
             "result": {
                 "protocolVersion": params.get("protocolVersion", "2024-11-05"),
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "ship-anchor", "version": "0.1.17"},
+                 "serverInfo": {"name": "ship-anchor", "version": "0.1.18"},
             },
         }
     if method == "ping":

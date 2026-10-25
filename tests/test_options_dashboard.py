@@ -176,6 +176,7 @@ def test_dashboard_step_is_showable() -> None:
     action_key = next(k for k in schema if k.key == "action")
     option_values = {opt["value"] for opt in schema[action_key].config.options}
     assert {"view", "add_rule", "delete_rule", "delete_binding", "erase_all", "recompile"} <= option_values
+    assert "re_handshake" in option_values  # v0.1.18 mesh-healing action
 
 
 # ---------------------------------------------------------------------------
@@ -287,3 +288,33 @@ def test_erase_all_clears_compiler_store() -> None:
     # cleared.
     assert result.get("data", {}).get("erase_result") == "success"
     assert compiler._stored_data["bindings"] == []
+
+
+# ---------------------------------------------------------------------------
+# LAYER 2 — v0.1.18 mesh-healing "Re-handshake" action
+# ---------------------------------------------------------------------------
+def test_re_handshake_heals_severed_hops() -> None:
+    data = _base_entry_data()
+      # ELI5: seed a binding whose two hops have gone quiet (one degraded,
+      # one orphaned) relative to "now".
+    data["heartbeat_now_ms"] = 240000
+    data["heartbeats"] = [
+         {"hop_index": 1, "last_counter": 5, "last_seen_ms": 120000},
+         {"hop_index": 2, "last_counter": 3, "last_seen_ms": 60000},
+    ]
+    flow, entry = _flow_with_entry(data, with_compiler=True)
+
+    result = _run(flow.async_step_init({"action": "re_handshake"}))
+      # ELI5: the action returns to the dashboard (a clean form, not an error).
+    assert result["step_id"] == "dashboard"
+      # The harness persisted the healed heartbeat snapshot onto the entry.
+    healed = entry.data["heartbeats"]
+    assert len(healed) == 2
+      # Every hop is re-armed to HEALTHY at "now".
+    for hop in healed:
+        assert hop["last_seen_ms"] == 240000
+        assert hop["state"] == "healthy"
+      # And the new "now" is recorded so the dashboard can re-render.
+    assert entry.data["heartbeat_now_ms"] == 240000
+      # Exactly one persistence call.
+    assert len(flow.hass.config_entries.updates) == 1

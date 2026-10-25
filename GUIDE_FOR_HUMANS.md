@@ -247,7 +247,7 @@ gcc -Wall -Wextra -Werror -std=c11 -DSHIP_PLATFORM_NATIVE \
 
 **Expected output:**
 ```
-RESULTS: 10/10 tests passed  — ALL PASS ✓
+RESULTS: 11/11 tests passed  — ALL PASS ✓
 ```
 
 ### Full Disaster Simulation (6 drills, all pass)
@@ -483,8 +483,8 @@ DevGroupSend 129=@|18
 | [`custom_components/ship_anchor/__init__.py`](custom_components/ship_anchor/__init__.py) | The "front door" — loads the integration, registers `compile` and `erase` services |
 | [`custom_components/ship_anchor/quirks_inspector.py`](custom_components/ship_anchor/quirks_inspector.py) | The "device translator" — finds correct endpoints, modes, and pre-flight attribute writes for each device |
 | [`custom_components/ship_anchor/compiler.py`](custom_components/ship_anchor/compiler.py) | The "offline programmer" — normalizes automations and creates binding payloads |
-| [`mcp/ship_anchor_mcp.py`](mcp/ship_anchor_mcp.py) | The "AI adapter" — seven MCP tools (inspect, compile, bake LEAT, list bindings, encode/decode, verify), stdio JSON-RPC, CLI, and demo mode |
-| [`sim/test_ship_core.c`](sim/test_ship_core.c) | The "flight simulator" — 10 C unit tests covering the protocol and native HAL |
+| [`mcp/ship_anchor_mcp.py`](mcp/ship_anchor_mcp.py) | The "AI adapter" — eight MCP tools (inspect, compile, bake LEAT, list bindings, encode/decode, verify, mesh diagnostic), stdio JSON-RPC, CLI, and demo mode |
+| [`sim/test_ship_core.c`](sim/test_ship_core.c) | The "flight simulator" — 11 C unit tests covering the protocol and native HAL |
 | [`sim/check_ship_fastpath_compile.py`](sim/check_ship_fastpath_compile.py) | A host-side C++ compile/link check for the ESPHome component and SHiP core |
 | [`sim/run_anchor_benchmarks.py`](sim/run_anchor_benchmarks.py) | The "fire drill coordinator" — six disaster scenarios and benchmark comparisons |
 | [`CLAUDE.md`](CLAUDE.md) | ELI5-first engineering memory and documented dead ends |
@@ -720,7 +720,7 @@ and `ship_run_verification_suite`.
 # Start a stdio MCP server for a compatible client
 python3 mcp/ship_anchor_mcp.py
 
-# List the compact schemas or try all seven tools locally
+# List the compact schemas or try all eight tools locally
 python3 mcp/ship_anchor_mcp.py --cli
 python3 mcp/ship_anchor_mcp.py --demo
 ```
@@ -895,7 +895,7 @@ and see the *chronological order* of every decision.
 2. **Chronological Milestones** — a date-stamped table for **every** release
    tag `v0.1.0` → `v0.1.16`, grouped into three eras:
     - *The Protocol Core* (v0.1.0–v0.1.9, 2026-10-20 → 2026-10-22): the C
-      core, authentication, anti-replay, LEAT, the 7-tool MCP bridge, and the
+      core, authentication, anti-replay, LEAT, the 8-tool MCP bridge, and the
       v0.1.8 security / PII audit.
     - *Multi-Way & Target-First* (v0.1.10–v0.1.11, 2026-10-22): the shared
       `group_id` bus, the `NoStatusShare` gesture `0x8`, and the target-first

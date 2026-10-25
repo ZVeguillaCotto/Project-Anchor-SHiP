@@ -47,7 +47,7 @@ integration checks:
 python3 sim/run_anchor_benchmarks.py
 ```
 
-The C suite should report **10/10 tests passed**, and the Python runner should
+The C suite should report **11/11 tests passed**, and the Python runner should
 report **6/6 drills passed**. Please investigate and resolve failures before
 opening a pull request.
 

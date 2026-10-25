@@ -67,6 +67,12 @@ from .compiler import (
     percent_to_brightness,
 )
 from .protocols import Protocol, PROTOCOL_ALIASES
+from .ship_protocol import (
+    HEALTH_HEALTHY,
+    HEALTH_UNKNOWN,
+    heartbeat_check,
+    heartbeat_rehandshake_needed,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1066,6 +1072,54 @@ class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
             chain = "{}  →  {}  →  {}".format(source_text, _label(canopy), target_text)
         return chain
 
+    def _render_heartbeat(self, data: dict, now_ms: int) -> str:
+        """ELI5: render the live mesh health for the binding's hops.
+
+        v0.1.18 — the **Orphaned Mesh Heartbeat**. Each hop in the chain
+        remembers when it last heard a *genuine* (HMAC-checked) frame. If a
+        relay goes quiet, the hop ahead of it flags DEGRADED or ORPHANED so
+        the user sees which branch of the mesh has gone dark — and gets a
+        "Re-handshake" button to re-arm it. Pure: no I/O, fully unit-testable.
+        """
+        heartbeats = data.get("heartbeats") or []
+        if not heartbeats:
+            # ELI5: a direct one-hop binding (no intermediate relay) has no
+            # orphan-detection row to show, which is itself the good news.
+            return "Heartbeat: no intermediate relays in this binding — " \
+                "nothing can go orphaned. ✓"
+        lines: list[str] = []
+        lines.append("**Live mesh heartbeat** ({} hop(s)).".format(len(heartbeats)))
+        lines.append("")
+        flagged = 0
+        for hop in heartbeats:
+            check = heartbeat_check(dict(hop), now_ms)
+            state = check["state"]
+            index = str(hop.get("hop_index", "?"))
+            if state == HEALTH_HEALTHY:
+                lines.append("   • Hop {}: healthy (last nonce {}).".format(
+                    index, hop.get("last_counter", "?")))
+            else:
+                flagged += 1
+                label = {
+                    "degraded": "degraded — warn",
+                    "orphaned": "ORPHANED — branch severed",
+                    "unknown": "unknown — no baseline yet",
+                }.get(state, state)
+                lines.append(
+                    "   • Hop {}: {} (needs re-handshake).".format(index, label)
+                )
+        if flagged:
+            lines.append("")
+            lines.append(
+                "⚠   {} of {} hop(s) need a **Re-handshake**. Use the action "
+                "below to re-arm the severed branch(es).".format(
+                    flagged, len(heartbeats))
+            )
+        else:
+            lines.append("")
+            lines.append("All hops healthy. ✓")
+        return "\n".join(lines)
+
     def _render_dashboard(self, data: dict) -> str:
         """ELI5: render the full dashboard description.
 
@@ -1100,6 +1154,11 @@ class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
                 ))
         else:
             lines.append("**No LEAT rules yet.** Use \"Add a new gesture rule\" below to give the first tap a meaning.")
+        # v0.1.18 — the live mesh heartbeat / degradation flag. The "now"
+        # comes from the stored heartbeat snapshot so the dashboard is a pure
+        # render of the last health check.
+        lines.append("")
+        lines.append(self._render_heartbeat(data, int(data.get("heartbeat_now_ms", 0))))
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -1138,10 +1197,23 @@ class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
                         return self.async_create_entry(title="", data={"erase_result": "success"})
             elif action == "recompile":
                 return self.async_abort(reason="restart_wizard")
-            else:
-                # Unknown action — fall through and show the dashboard
-                # with an honest error so the user can pick a real one.
-                errors["base"] = "unknown_action"
+            elif action == "re_handshake":
+                # ELI5 (v0.1.18): the user clicked "Re-handshake" on a binding
+                # whose heartbeat flagged a degraded/orphaned branch. We
+                # re-establish each hop's baseline by treating "now" as a fresh
+                # last-seen moment and marking every hop healthy, then persist.
+                now_ms = int(data.get("heartbeat_now_ms", 0))
+                healed: list[dict] = []
+                for hop in (data.get("heartbeats") or []):
+                    fresh = dict(hop)
+                    fresh["last_seen_ms"] = now_ms
+                    fresh["state"] = HEALTH_HEALTHY
+                    healed.append(fresh)
+                new_data = dict(data)
+                new_data["heartbeats"] = healed
+                new_data["heartbeat_now_ms"] = now_ms
+                await self._update_entry(new_data)
+                return await self.async_step_init(None)
 
         schema = vol.Schema(
             {
@@ -1154,6 +1226,7 @@ class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
                             {"value": "delete_binding", "label": "Delete a specific source binding"},
                             {"value": "erase_all", "label": "Erase ALL bindings (nuclear)"},
                             {"value": "recompile", "label": "Re-run the wizard"},
+                            {"value": "re_handshake", "label": "Re-handshake (re-arm severed mesh hops)"},
                         ],
                         mode=SelectSelectorMode.DROPDOWN,
                     )

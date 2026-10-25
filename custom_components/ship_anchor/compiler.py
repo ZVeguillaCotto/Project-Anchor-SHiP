@@ -291,83 +291,294 @@ class AnchorCompiler:
         if not chain:
             result.success = False
             result.errors.append(
-                "ELI5: no hops to compile — pass at least one device in the chain."
-            )
+                  "ELI5: no hops to compile — pass at least one device in the chain."
+              )
             return result
 
-        # LEAT rows are compiled once up front so every hop carries the
-        # same cheat-sheet — the device that actually runs the gesture
-        # (usually the first hop) can share it with the rest of the chain
-        # at frame-encode time.
-        compiled_leat: list[dict] = []
+            # ELI5 (v0.1.18): a linear chain is just a DAG where every
+            # node has exactly one child, so we translate it into
+            # adjacent (parent, child) edges and delegate to the DAG
+            # compiler. This keeps the legacy linear semantics without
+            # duplicating the per-hop logic.
+        edges = [
+             (chain[index], chain[index + 1])
+             for index in range(len(chain) - 1)
+         ]
+        if not edges:
+             # A single-device 'chain' has no hop — success stays True
+             # with nothing to do, matching the pre-v0.1.18 behaviour.
+            result.warnings.append(
+                 "Multi-hop chain compiled: 0 hop(s) across {} device(s)".format(
+                    len(chain)
+                 )
+             )
+            return result
+        return await self.async_compile_dag(
+            edges, rules=rules, dry_run=dry_run, group_name=group_name
+         )
+    # ------------------------------------------------------------------
+    # Multi-Zone Virtual Grouping / DAG routing     (v0.1.18 — Pillar 2)
+    # ELI5: a real mesh is not a single line of devices — it *branches*. One
+    #        ceiling canopy can feed a whole room (a light, a fan, a valve),
+    #        or several canopies can feed the same zone. The compiler now
+    #        understands a **DAG** (a directed acyclic graph): a set of
+    #        parent->child edges. A one-to-many fan-out — one source driving
+    #        many children — is exactly the multi-zone "virtual grouping" the
+    #        wizard collects.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _normalize_dag_edges(dag: Any) -> tuple[list[tuple[dict, dict]], list[str]]:
+        """ELI5: turn the ways a user might *describe* a mesh into one
+        canonical edge list of ``(parent, child)`` device pairs.
+
+        Accepted shapes:
+             * a list of ``[parent, child]`` / ``{parent, child}`` /
+               ``{source, target}`` edge descriptors;
+             * a list of node dicts each carrying a ``children``/``targets``
+              list;
+             * an adjacency mapping ``{parent: [child, ...]}``.
+
+        Returns ``(edges, warnings)``; an empty graph with no usable device
+        is reported as an error string so the caller can surface it honestly.
+        """
+        warnings: list[str] = []
+
+        def _is_adjacency(mapping: Any) -> bool:
+            return isinstance(mapping, dict) and bool(mapping) and all(
+                isinstance(v, (list, tuple)) for v in mapping.values()
+            )
+
+        raw_edges: list[tuple[dict, dict]] = []
+        if _is_adjacency(dag):
+            # ELI5: keys are parent device ids; values are the children each
+            # parent drives. Resolve each to a device dict.
+            for parent_key, children in dag.items():
+                parent = {"device_id": parent_key, "identifiers": []}
+                for child in children:
+                    child_entry = child if isinstance(child, dict) else {
+                        "device_id": child, "identifiers": [],
+                    }
+                    raw_edges.append((parent, child_entry))
+            warnings.append(
+                "DAG: read adjacency mapping with {} parent node(s).".format(len(dag))
+            )
+        elif isinstance(dag, (list, tuple)):
+            for item in dag:
+                if isinstance(item, dict) and ("children" in item or "targets" in item):
+                    # ELI5: a node dict that lists the children it drives.
+                    for child in (item.get("children") or item.get("targets") or []):
+                        child_entry = child if isinstance(child, dict) else {
+                            "device_id": child, "identifiers": [],
+                        }
+                        raw_edges.append((item, child_entry))
+                elif isinstance(item, (list, tuple)) and len(item) == 2:
+                    # ELI5: a 2-tuple edge — the simplest "parent -> child".
+                    raw_edges.append((item[0], item[1]))
+                elif isinstance(item, dict) and ("parent" in item or "source" in item):
+                    # ELI5: an edge-descriptor dict.
+                    parent = item.get("parent") or item.get("source")
+                    child = item.get("child") or item.get("target")
+                    if parent is None or child is None:
+                        continue
+                    parent_entry = parent if isinstance(parent, dict) else {
+                        "device_id": parent, "identifiers": [],
+                    }
+                    child_entry = child if isinstance(child, dict) else {
+                        "device_id": child, "identifiers": [],
+                    }
+                    raw_edges.append((parent_entry, child_entry))
+
+        if not raw_edges:
+            return [], [
+                "ELI5: no routing edges found — pass at least one "
+                "parent->child hop in the mesh."
+            ]
+        return raw_edges, warnings
+
+    @staticmethod
+    def _hop_next_value(target: dict) -> str:
+        """ELI5: the value an IP-protocol leg uses to reach its next hop —
+        the child device's IP, or its IEEE as a fallback."""
+        identifiers = target.get("identifiers") or []
+        if identifiers and isinstance(identifiers[0], (tuple, list)) and len(identifiers[0]) > 1:
+            return str(identifiers[0][1])
+        return ""
+
+    @staticmethod
+    def _dag_topo_order(
+        edges: list[tuple[dict, dict]],
+    ) -> tuple[list[tuple[dict, dict]], list[str]]:
+        """ELI5: order the edges so every parent compiles before its
+        children (a depth-first walk over the edge tree).
+
+        Returns ``(ordered_edges, cycle_warnings)``. A routing cycle — a
+        device that routes back to its own ancestor, physically impossible in
+        a real mesh — is dropped with an honest warning rather than looping
+        forever.
+        """
+        def _key(device: dict) -> str:
+            return str(device.get("device_id") or device.get("name") or id(device))
+
+        parent_of: dict[str, str] = {}
+        edge_by_pair: dict[tuple[str, str], tuple[dict, dict]] = {}
+        all_keys: set[str] = set()
+
+        for parent, child in edges:
+            p_key = _key(parent)
+            c_key = _key(child)
+            all_keys.add(p_key)
+            all_keys.add(c_key)
+            pair = (p_key, c_key)
+            if pair not in edge_by_pair:
+                edge_by_pair[pair] = (parent, child)
+            parent_of.setdefault(c_key, p_key)
+
+        cycle_warnings: list[str] = []
+        ordered: list[tuple[dict, dict]] = []
+        visited: set[str] = set()
+        visiting: set[str] = set()
+
+        def visit(node_key: str) -> bool:
+            # Returns True on a clean visit, False when a cycle is hit.
+            if node_key in visiting:
+                return False
+            if node_key in visited:
+                return True
+            visiting.add(node_key)
+            p = parent_of.get(node_key)
+            if p is not None and not visit(p):
+                visiting.discard(node_key)
+                return False
+            visiting.discard(node_key)
+            visited.add(node_key)
+            if p is not None and (p, node_key) in edge_by_pair:
+                ordered.append(edge_by_pair[(p, node_key)])
+            return True
+
+        for key in list(all_keys):
+            if not visit(key):
+                cycle_warnings.append(
+                    "ELI5: a routing cycle was detected and the looped edge(s) "
+                    "dropped — a device cannot route back to its own ancestor."
+                )
+
+        # ELI5: emit any edges the DFS left out (cycle remnants) at the end,
+        # so the user still gets an honest preview of every branch.
+        emitted: set[tuple[str, str]] = set((_key(p), _key(c)) for p, c in ordered)
+        for pair, (parent, child) in edge_by_pair.items():
+            if pair not in emitted:
+                ordered.append((parent, child))
+                emitted.add(pair)
+        return ordered, cycle_warnings
+
+    async def async_compile_dag(
+        self,
+        dag: Any,
+        rules: list[dict] | None = None,
+        dry_run: bool = True,
+        group_name: str = "",
+    ) -> CompileResult:
+        """
+        ELI5: compile a **mesh** described as a DAG of parent->child edges —
+        the multi-zone, one-to-many "virtual grouping" a real ceiling-canopy
+        mesh is. A linear chain is just a DAG where every node has one child,
+        so this is the superset of ``async_compile_multihop``.
+
+        Each hop (one edge) is compiled exactly like a single-hop binding,
+        tagged with its `hop_index` and `zone` (the child device's id, so a
+        one-to-many fan-out lands in the right zone). LEAT rows are compiled
+        once and attached up front, shared by every hop. A broken hop is
+        reported but does *not* abort the whole mesh — the remaining branches
+        still preview, which is the whole point of a virtual group: one
+        severed zone must not blind the others.
+        """
+        result = CompileResult()
+        raw_edges, warnings = self._normalize_dag_edges(dag)
+        result.warnings.extend(warnings)
+        if not raw_edges:
+            result.success = False
+            for warning in warnings:
+                result.errors.append(warning)
+            return result
+
+        # ELI5: order the branches so parents compile before their children,
+        # and drop any physical impossibility (a routing cycle).
+        edges, cycle_warnings = self._dag_topo_order(raw_edges)
+        result.warnings.extend(cycle_warnings)
+
+        # LEAT rows are compiled once up front so every hop carries the same
+        # cheat-sheet — shared at frame-encode time across the mesh.
         if rules:
             compiled_leat = self.build_leat_table(rules)
             if compiled_leat:
                 result.warnings.append(
                     "LEAT: compiled {} rule(s) into {} device row(s) "
-                    "(attached to every hop)".format(
+                    "(shared across every DAG branch)".format(
                         len(rules), len(compiled_leat)
                     )
                 )
                 for row in compiled_leat:
                     result.dry_run_payloads.append({"step": "leat_write", "row": row})
 
-        hop_count = max(1, len(chain) - 1)
-        for index in range(len(chain) - 1):
-            source = chain[index]
-            target = chain[index + 1]
-            hop_config: dict[str, Any] = dict(self._hop_source_config(source))
-            hop_config["targets"] = [dict(target)]
-            # ELI5: IP-protocol legs address the *next* hop by its own
-            # identifier value (the device's IP, or IEEE as a fallback).
-            next_value = ""
-            identifiers = target.get("identifiers") or []
-            if identifiers and isinstance(identifiers[0], (tuple, list)) and len(identifiers[0]) > 1:
-                next_value = str(identifiers[0][1])
+        node_keys: set[str] = set()
+        for index, (parent, child) in enumerate(edges, start=1):
+            p_key = str(parent.get("device_id") or parent.get("name") or id(parent))
+            zone = str(child.get("device_id") or child.get("name") or "zone_{}".format(index))
+            node_keys.add(p_key)
+            node_keys.add(zone)
+            hop_config: dict[str, Any] = dict(self._hop_source_config(parent))
+            hop_config["targets"] = [dict(child)]
+            # ELI5: IP-protocol legs address the next hop by its IP/IEEE.
+            next_value = self._hop_next_value(child)
             if next_value:
                 hop_config.setdefault("target_ip", next_value)
                 hop_config.setdefault("target_ips", [next_value])
                 hop_config.setdefault("next_hop_ip", next_value)
             if group_name:
                 hop_config["group_name"] = group_name
-            hop_protocol = self._hop_protocol(source)
+            hop_protocol = self._hop_protocol(parent)
             hop_config["protocol"] = hop_protocol.name
-            # ELI5: run this hop through the same single-hop compile the
-            # wizard already uses — the per-protocol handler builds the
-            # exact payloads (ZHA service calls, Shelly HTTP, Tasmota
-            # Backlog, Matter WS, Z-Wave association, …).
             try:
                 parsed = parse_ha_automation_dict(
                     hop_config, self._get_device_registry(),
                     self._get_entity_registry(),
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:      # noqa: BLE001
+                # ELI5: one bad branch must not blind the others — record it
+                # and keep going. This is the resilience a virtual group
+                # promises.
                 result.success = False
-                result.errors.append("Hop {} → {}: {}".format(index + 1, index + 2, exc))
+                result.errors.append(
+                    "Hop {} -> {} (zone {!r}): {}".format(index, index + 1, zone, exc)
+                )
                 continue
             parsed["protocol"] = hop_protocol.name
             await self._compile_automation(parsed, result, dry_run)
-            # Tag each payload with its hop index so the UI can group the
-            # dry-run output into "Hop 1", "Hop 2", … sections.
-            for payload in result.dry_run_payloads:
-                if isinstance(payload, dict) and "hop_index" not in payload:
-                    payload["hop_index"] = index + 1
+            # ELI5: tag only the payloads *this* hop produced so per-zone
+            # grouping is correct even when one branch fans out.
+            untagged = [
+                p for p in result.dry_run_payloads
+                if isinstance(p, dict) and "hop_index" not in p
+            ]
+            for payload in untagged:
+                payload["hop_index"] = index
+                payload["zone"] = zone
             if not result.success:
-                # ELI5: the whole chain only works when every hop compiles.
-                # Stop early and report which hop broke so the user can
-                # fix it and retry without recompiling the others.
+                # ELI5: a broken branch stops *its* chain, but we report it
+                # and return so the caller can act; branches that compiled
+                # above are already in the payload list.
                 result.errors.append(
-                    "ELI5: multi-hop chain aborted at hop {} → {}. "
-                    "Fix that hop's protocol or devices, then retry.".format(
-                        index + 1, index + 2,
+                    "ELI5: multi-zone branch reported at hop {} -> {} (zone "
+                    "{!r}); other branches still previewed.".format(
+                        index, index + 1, zone,
                     )
                 )
                 return result
 
-        # ELI5: summary line so the wizard can show "2 hops, 3 rules".
+        # ELI5: summary line so the wizard can show "3 branches, 2 rules".
         result.warnings.append(
-            "Multi-hop chain compiled: {} hop(s) across {} device(s).".format(
-                hop_count, len(chain)
+            "Multi-zone mesh compiled: {} branch(es) across {} node(s).".format(
+                len(edges), len(node_keys)
             )
         )
         return result
