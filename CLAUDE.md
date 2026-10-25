@@ -17,6 +17,11 @@ file added or changed must put a plain-language explanation before technical
 details. Explain jargon before depending on it, and keep documentation honest
 about what is simulated versus measured on real hardware.
 
+> **Architectural history:** the date-stamped record of *why* the project is
+> built the way it is — every milestone from v0.1.0 to v0.1.16 with its real
+> git tag date and trade-offs — lives in
+> [ARCH_DECISIONS.md](ARCH_DECISIONS.md). Read it before changing architecture.
+
 ## Layer 2 — Engineering Ground Truth
 
 ### Protocol and implementation invariants
@@ -198,6 +203,7 @@ translate them to the protocol units the hardware expects:
 |---|---|
 | `README.md` | Project overview, wire format, benchmarks, quick start |
 | `GUIDE_FOR_HUMANS.md` | Plain-English explanation, payload reference, MCP usage |
+| `ARCH_DECISIONS.md` | **Architectural Decision Record** — date-stamped history (v0.1.0→v0.1.16) of milestones, design choices, and trade-offs |
 | `CLAUDE.md` / `AGENTS.md` | Agent memory and onboarding |
 | `src/ship_core/ship_protocol.h` | Frame layout, enums, protocol and HAL APIs |
 | `src/ship_core/ship_protocol.c` | SipHash, frame encode/decode, LEAT, Mesh-RTC |

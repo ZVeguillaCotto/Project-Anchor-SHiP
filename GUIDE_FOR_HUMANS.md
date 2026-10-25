@@ -7,6 +7,11 @@
 
 Welcome. This guide explains **every part of Project Anchor** in plain English first, then in technical detail second. If you see a word you don't recognise, it will always be explained before it's used.
 
+> *Want the plain-English history of **why** the project is built the way it is —
+> every milestone from the very first release up to today, with its calendar
+> date? That lives in* [**ARCH_DECISIONS.md**](ARCH_DECISIONS.md)*, the
+> Architectural Decision Record.*
+
 ---
 
 ## Part 1: Why Does Your Smart Home Break During a Reboot?
@@ -863,6 +868,50 @@ compiler's Layer-1 contract never change.
 \* `350 mireds` reads back as `~2857K` (the inverse of 370 mireds is 2703 K;
 the round-trip is lossy by one or two Kelvin because of rounding, which is
 exactly the tolerance a human expects of a bulb box).
+
+---
+
+## Part 18: The Architectural Decision Record (ARCH_DECISIONS.md)
+
+### Layer 1 — The Kitchen-Table Explanation
+
+Every big project has a *story*: what it started as, what it tried, what it
+threw away, and *why*. For SHiP Anchor that story is written down in
+`ARCH_DECISIONS.md`, the **Architectural Decision Record (ADR)**.
+
+Think of it as the project's **diary with dates on every page**. Each entry
+says, in one sentence, *what* changed and *why it mattered to a human*, and then
+gives the engineering detail for anyone who wants to go deeper. The dates are
+the **real calendar dates** the releases were tagged (October 2026), so even if
+the git history is ever cleaned up for a public launch, you can still look back
+and see the *chronological order* of every decision.
+
+### Layer 2 — The Engineering Ground Truth
+
+`ARCH_DECISIONS.md` is organised in four parts:
+
+1. **Genesis & the Core Law** — what SHiP Anchor is, the "ELI5 First,
+   Engineering Second" rule, and the two tiers.
+2. **Chronological Milestones** — a date-stamped table for **every** release
+   tag `v0.1.0` → `v0.1.16`, grouped into three eras:
+    - *The Protocol Core* (v0.1.0–v0.1.9, 2026-10-20 → 2026-10-22): the C
+      core, authentication, anti-replay, LEAT, the 7-tool MCP bridge, and the
+      v0.1.8 security / PII audit.
+    - *Multi-Way & Target-First* (v0.1.10–v0.1.11, 2026-10-22): the shared
+      `group_id` bus, the `NoStatusShare` gesture `0x8`, and the target-first
+      wizard.
+    - *Testing, Bidirectional & Canopy* (v0.1.12–v0.1.16, 2026-10-23 →
+      2026-10-24): the Testing Pyramid, the bidirectional wizard, multi-hop
+      canopy routing, the visual dashboard, and the human-units translation
+      layer.
+3. **Key Trade-Offs & Guardrails** — *why* chain-like routing was chosen over
+   broadcast-like mesh for physical canopies; *why* C structs stay rigid while
+   rich values ride in `frame_params`; the MCP token-ceiling tripwire
+   (`< 1,500` tokens); and the six documented dead ends.
+4. **The Release Calendar** — a one-line-per-release timeline.
+
+This file is the single source of *architectural* memory. `CLAUDE.md` and
+`AGENTS.md` point to it; this guide points to it from the start.
 
 *Guide written for SHiP v0.1 (Project Anchor) — October 2026.*
 *"ELI5 First, Engineering Second." — The Anchor Mandate.*

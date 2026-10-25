@@ -7,6 +7,11 @@ have to rediscover protocol rules and previous dead ends. Start with
 [CLAUDE.md](CLAUDE.md): it explains Project Anchor in plain language first,
 then gives the engineering details, architecture map, and verification steps.
 
+For the **date-stamped architectural history** — every milestone from v0.1.0 to
+v0.1.16 with its real git tag date, the design choices, and the trade-offs —
+read [ARCH_DECISIONS.md](ARCH_DECISIONS.md). It preserves the chronological
+progression even if the git history is ever reset for a clean public launch.
+
 ## Layer 2 — The Under-the-Hood Instructions
 
 Read [CLAUDE.md](CLAUDE.md) before changing code. Follow its six documented

@@ -1,0 +1,337 @@
+# SHiP Anchor — Architectural Decision Record (ADR)
+### *The plain-English history of why the project is built the way it is.*
+
+> **ELI5 First, Engineering Second.** Every entry below says, in one
+> sentence, *what* changed and *why it mattered to a human*, and then gives the
+> engineering detail for anyone who wants to go deeper.
+>
+> **Why this file exists:** git tags can be rewritten or reset for a clean
+> public launch, but a human-readable timeline of *when* each decision was made
+> and *why* must survive. Every milestone below therefore carries its **real
+> calendar completion date** (the git tag date, Eastern Time / US-Eastern,
+> `-04:00`), so the chronological progression stays intact even if the commit
+> history itself is squashed or rebased.
+
+---
+
+## Part 1 — Project Genesis & The Core Law
+
+### The kitchen-table version
+
+Your smart home's switches and lights normally shout to each other through a
+hub (Home Assistant) and a router. When the hub reboots for an update, or the
+router hiccups after a power blink, **those shouts get lost** — lights go
+dark, valves forget, automations fall silent.
+
+**SHiP Anchor** ("Smart Home Independent Protocol") makes devices remember each
+other's *direct* radio addresses, so the most important device-to-device
+actions keep working even when the hub, the router, and the cloud are all off.
+It also gives a fast 19-byte "radio whisper" path for custom hardware that can
+talk directly, below Wi-Fi and below IPv6.
+
+### The Core Law — "ELI5 First, Engineering Second"
+
+This is the non-negotiable project rule that governs *every* file, commit, and
+release:
+
+1. **ELI5 First** — explain the idea in plain language a non-engineer can
+   understand *before* any jargon. If a word is introduced, it is explained
+   first.
+2. **Engineering Second** — only after the plain idea is clear do we give the
+   rigorous technical detail.
+3. **Honesty** — always say plainly what is *simulated* versus *measured on
+   real hardware*. Never dress a simulation up as a measurement.
+
+This law is not decorative: it is encoded in the testing pyramid (each layer
+states its own plain-language purpose), in the wizard's step titles, and in
+the ELI5 rule translators in `config_flow.py`.
+
+### The two tiers
+
+- **Tier 1 — Offline Compiler.** Read Home Assistant automation definitions and
+  program *existing* Zigbee, Matter, Z-Wave, Shelly, and Tasmota devices using
+  each protocol's native binding mechanism. No new hardware needed.
+- **Tier 2 — SHiP Fast-Path.** One authenticated 19-byte 802.15.4 message
+  between custom-capable devices (ESP32-C6, ESP32-H2, nRF52840, nRF5340), with
+  local action rules (LEAT) and a mesh clock (Mesh-RTC).
+
+---
+
+## Part 2 — Chronological Milestones & Date-Stamped Decisions
+
+The dates below are the **real git tag dates** for `refs/tags/v0.1.N` in this
+repository (Eastern Time, `-04:00`). They are the authoritative record and are
+preserved here precisely so a git-history reset cannot erase *when* each
+decision was made.
+
+### v0.1.0 – v0.1.9 — The Protocol Core, the C Core, and Resilience
+*(2026-10-20 → 2026-10-22)*
+
+The first ten releases built the foundation: a faithful C protocol core, the
+Home Assistant integration, the seven-tool MCP bridge, and the hardening that
+makes it safe to ship.
+
+| Tag | Date | What happened | Why it mattered |
+|---|---|---|---|
+| **v0.1.0** | 2026-10-20 | Initial public commit: the 19-byte frame format, SipHash-2-4 16-bit authentication, anti-replay counter, LEAT, Mesh-RTC, the C core, and the ESPHome `ship_fastpath` component. | The first honest, working skeleton of the whole idea. |
+| **v0.1.1** | 2026-10-21 | Log user-facing milestones at WARNING; surface service-call exceptions. | A user can *see* in the log when something happens, instead of a silent no-op. |
+| **v0.1.2** | 2026-10-21 | Fix protocol detection for *entity-trigger* automations. | Entity-based automations (the modern HA style) were being misread; now they map to the right protocol. |
+| **v0.1.3** | 2026-10-21 | Support direct-configuration payloads in `ship_anchor.compile`. | Users can compile a binding from a raw config blob, not only from a stored automation. |
+| **v0.1.4** | 2026-10-21 | Add the interactive 4-step configuration wizard. | A non-engineer can build a binding from a dropdown flow instead of typing YAML. |
+| **v0.1.5** | 2026-10-21 | Make the shared runtime survive multi-entry teardown. | Adding and removing several SHiP Anchor entries no longer kills the shared compiler object. |
+| **v0.1.6** | 2026-10-21 | Fix `QuirksInspector` live introspection; correct Inovelli/Hue endpoints. | Vendor quirks (Inovelli, Philips Hue, Aqara, Tuya) read the right endpoints; Hue target endpoint is 11, standard ZCL target is 1. |
+| **v0.1.7** | 2026-10-21 | Extend the wizard: multi-select targets, transition (fade) time, and an options flow. | One wizard run can bind *many* targets and add a smooth fade; the options flow lets users reconfigure later. |
+| **v0.1.8** | 2026-10-21 | **Security / PII audit:** command-injection hardening, example/mock key masking. | A shipping custom integration must not leak secrets or accept shell-injection. This is the "make it safe for the public" milestone. |
+| **v0.1.9** | 2026-10-22 | Surgical fix: `erase_all` no longer aborts on an unsupported or offline binding. | "Wipe everything" must always succeed cleanly, even when one saved device is broken or powered off — a clean error, never a traceback. |
+
+**Engineering ground truth (v0.1.0–v0.1.9):**
+- **Protocol isolation:** `_device_protocols_match(a, b)` is the guard that
+  decides whether two devices can ever reach each other. It treats ZHA and
+  Zigbee2MQTT as the same Zigbee family but **rejects** cross-bus pairs
+  (Zigbee↔Z-Wave, Matter↔Shelly, …).
+- **Authentication:** normal domains authenticate bytes 9–16 with a 16-bit
+  SipHash-2-4 tag in bytes 17–18; the Mesh-RTC domain `0xF` stores its 32-bit
+  UTC epoch in bytes 14–17 and an 8-bit tag in byte 18.
+- **Anti-replay:** a replay counter is checked on every accepted frame, so a
+  captured packet cannot be resent to re-trigger an action.
+- **The C core** (`src/ship_core/ship_protocol.c`, `ship_radio_hal.c`) is the
+  single source of wire truth; the LEAT rows the Python compiler emits must
+  match `ship_leat_entry_t` **field-for-field**.
+- **The 7-tool MCP server** (all preview-only, never actuating):
+  `ship_inspect_device`, `ship_compile_binding`, `ship_bake_behavior`,
+  `ship_list_bindings`, `ship_encode_19b_frame`, `ship_decode_verify_19b_frame`,
+  `ship_run_verification_suite`.
+
+---
+
+### v0.1.10 – v0.1.11 — Multi-Way Sync & the Target-First Wizard
+*(2026-10-22)*
+
+These releases make *many* switches stay in perfect sync, and they flip the
+wizard so it anchors on the *target* first.
+
+| Tag | Date | What happened | Why it mattered |
+|---|---|---|---|
+| **v0.1.10** | 2026-10-22 | Document multi-way switch synchronisation: a shared `group_id` broadcast bus plus the `NoStatusShare` gesture (`0x8`). | N switches + shared bulbs stay in exact sync on one SHiP Group ID; the `NoStatusShare` gesture suppresses status-echo loops so the bulbs don't "talk back" forever. |
+| **v0.1.11** | 2026-10-22 | Target-first wizard: protocol-filtered multi-source selection + per-kind dynamic behaviour, and the LEAT rule compiler. | You start from the thing you want to *control*; the source step lists **only** switches that share that target's protocol, so an impossible pairing can't be built. |
+
+**Engineering ground truth:**
+- **Shared `group_id` broadcast bus:** for more than two targets, every target
+  is added to the ZCL Groups cluster (`0x0004`, Add command `0x00`) and the
+  source switch binds to that *group* — not to N separate unicast targets.
+- **`NoStatusShare` gesture (`0x8`):** when a device acts, it must not rebroadcast
+  a "status changed" frame, or N synchronized devices enter an echo loop. The
+  `0x8` gesture tells peers "I acted, but don't echo."
+- **`_infer_protocol` / `_target_kind` / `TARGET_CAPABILITIES`:** the wizard
+  derives a protocol from identifier namespaces and model strings, classifies
+  the target (light/fan/valve/lock/cover/climate), and shows only the action
+  fields that kind supports.
+- **`build_leat_table(rules, group_id)`:** compiles each rule into a row that
+  matches `ship_leat_entry_t` field-for-field
+   `{group_id, domain, gesture, action_type, action_param, hour_start, hour_end,
+  enabled}`.
+
+---
+
+### v0.1.12 – v0.1.14 — The Testing Pyramid, Bidirectional Wizard & Multi-Hop Canopy
+*(2026-10-23)*
+
+These releases make the project *verifiable* and *extendable*: a formal testing
+pyramid, a wizard that can start from either end, and routing through a physical
+intermediate module.
+
+| Tag | Date | What happened | Why it mattered |
+|---|---|---|---|
+| **v0.1.12** | 2026-10-23 | MCP sync: add `ship_bake_behavior` (LEAT) and `ship_list_bindings`; raise the schema token ceiling. | The MCP surface grows to **seven tools** and a token tripwire keeps the schema compact. |
+| **v0.1.13** | 2026-10-23 | Industry-standard **Testing Pyramid**: pytest unit + integration suites, run on a plain computer. | A wide, cheap base (pure logic) and a narrow, expensive top (C core + disaster drills) — every change is verified bottom-up before it lands. |
+| **v0.1.14** | 2026-10-23 | Bidirectional wizard (source-first *or* target-first) + **chain-like multi-hop canopy routing**. | The wizard anchors from either end; a signal can route `switch → canopy/relay → load` to mirror real ceiling-box wiring. |
+
+**Engineering ground truth:**
+- **Testing Pyramid (3 tiers, all runnable on a plain computer):**
+  1. *Unit* — pure logic: `_device_protocols_match`, `_target_kind`,
+     `_infer_protocol`, `TARGET_CAPABILITIES`, LEAT row mapping, the multi-hop
+     chain compiler, and the dashboard ELI5 translators.
+  2. *Integration* — wizard steps, the `.storage/ship_anchor.bindings`
+     round-trip, and the resilient `erase_all` (HA stubbed by
+     `tests/conftest.py`).
+  3. *System / disaster* — the C core (`sim/test_ship_core.c`, **10/10**) and
+     the simulation + MCP drills (`sim/run_anchor_benchmarks.py`, **6/6**).
+  - **The invariant:** the LEAT rows produced at Layer 1 are field-for-field
+    identical to the `ship_leat_entry_t` struct asserted by the C suite at
+    Layer 3. A mismatch is a **release blocker**.
+- **Bidirectional wizard:** `async_step_user` asks direction first; both ends
+  funnel through one direction-agnostic `async_step_anchor(side)`, and the
+  *other* end is always protocol-filtered by `_device_protocols_match()`.
+- **`async_compile_multihop(chain, rules, dry_run, group_name)`:** compiles a
+  `chain` of device entries sequentially — hop *i* = `chain[i] → chain[i+1]` —
+  through the same per-protocol handlers as a one-hop binding. LEAT rows are
+  compiled **once** and attached to every hop; each hop is tagged with
+   `hop_index`. A broken hop aborts the chain with an honest, hop-numbered
+   error.
+
+---
+
+### v0.1.15 — Visual Options Flow Dashboard & LEAT Inspector
+*(2026-10-23)*
+
+The options dialog stops being "a set of hidden buttons" and becomes a dashboard
+you can *read and edit* in plain English.
+
+- **What happened:** `ShipAnchorOptionsFlow` was rewritten as a **Visual LEAT &
+  Multi-Hop Inspector** — a dashboard at `Settings → Devices & Services → SHiP
+  Anchor → Configure`. It renders the whole binding (chain + protocol + group +
+  every LEAT rule) as a markdown description and offers an **action** dropdown:
+  *Add a rule*, *Delete a rule*, *Delete a source binding*, *Erase all*,
+  *Recompile*, or *Just close this dialog*.
+- **Why it mattered:** a non-engineer can now inspect and manage a binding
+  *inside Home Assistant* without reading JSON, Developer Tools, or the log.
+- **Engineering ground truth:**
+  - Flow steps: `dashboard` (init) → `add_rule` → `select_rule` →
+    `delete_binding`.
+  - **Pure, unit-tested ELI5 translators:** `_GESTURE_ELI5`,
+    `_rule_window_phrase`, `_rule_actions_phrase`, and `_rule_eli5` turn a raw
+    rule dict into one English sentence (e.g. *"On a triple tap: set
+    brightness to 120, set colour temperature to 350 mireds and fade over 2 s."*).
+  - Persistence via `hass.config_entries.async_update_entry`; `erase_all` keeps
+    the v0.1.9 resilience (a missing runtime yields `no_runtime`, not a crash).
+  - New test file `tests/test_options_dashboard.py` (Layer 1 + 2).
+  - **Honest caveat:** this is a Home Assistant UI feature only; the MCP surface
+    stays at **seven tools** and the wire format is unchanged.
+
+---
+
+### v0.1.16 — User-Friendly Unit Abstraction & Translation Layer
+*(2026-10-24)*
+
+The wizard and dashboard now speak **human units** (Kelvin and percent) and
+silently translate them to the protocol units the hardware needs.
+
+- **What happened:** the wizard (`async_step_behavior`) and the options
+   `async_step_add_rule` accept a colour temperature in **Kelvin** (2000 K warm
+  → 6500 K cool, like a bulb box) and a **brightness percentage** (0–100 %),
+  and translate them to **mireds** (153–500) and a **0–255 byte** at the
+   `config_flow.py` boundary.
+- **Why it mattered:** a non-engineer never has to think about mireds or raw
+  bytes. The dashboard shows *both* — the human value first, the raw value in
+  brackets — e.g. *"set brightness to 50% (raw 127)"* and *"set colour
+  temperature to ~2857K (350 mireds)"*.
+- **Engineering ground truth:**
+  - A new pure, unit-tested translation engine in `compiler.py`:
+    `kelvin_to_mireds()` (`round(1000000 / K)`, clamped 153–500),
+    `mireds_to_kelvin()` (inverse), `percent_to_brightness()`
+    (`int(255 * p / 100)`, so 50 % → 127), `brightness_to_percent()` (inverse),
+    and `normalize_rule_units()` (the bridge).
+  - **The canonical rule dict stays in protocol units** (`brightness` 0–255,
+    `color_temp_mireds` 153–500), so the C struct `ship_leat_entry_t` and its
+    Layer-1 tests are **untouched** — translation happens only at the
+    `config_flow.py` boundary. `normalize_rule_units` is back-compatible, so a
+    rule already in protocol units passes through unchanged.
+  - `tests/test_compiler_unit.py` gains 12 converter tests; total **74 passed**.
+
+---
+
+## Part 3 — Key Design Trade-Offs & Guardrails
+
+### 3.1 Why Chain-Like routing (not Broadcast-Like mesh) for physical canopies
+
+**ELI5:** A ceiling-fan canopy is a *power switch on the way to the light* — a
+real wire goes through it. So the natural model is a **chain**:
+`switch → canopy → load`. Each hop is just an ordinary one-hop binding to the
+*next* device, compiled in order by `async_compile_multihop()`.
+
+- **Decision:** Chain-Like routing is the **shipping path**. A Broadcast-Like
+  "Multicast Group Mesh" (one multicast to a shared group, de-duplicated by the
+  `NoStatusShare` lock) is **roadmap only**, documented in
+  `GUIDE_FOR_HUMANS.md` Part 14 but *not implemented*.
+- **Trade-off:** Chain-Like is simple, predictable, and matches physical
+  power-gating canopies. Broadcast-Like is more efficient for large, *flat*
+  clusters with no relaying middle device — but those are the rare case, and
+  shipping the common case first is the right call. The two are complementary,
+  not competing.
+
+### 3.2 Why C structs are kept rigid, and rich values ride in `frame_params`
+
+**ELI5:** The C struct `ship_leat_entry_t` is the thing that gets `memcpy`'d
+straight into device flash. If we let the Python side invent new fields, every
+device could read garbage.
+
+- **Decision:** the LEAT row is **rigid** — exactly
+   `{group_id, domain, gesture, action_type, action_param, hour_start, hour_end,
+  enabled}`. A single `action_param` byte holds the primary action.
+- **Trade-off:** values that don't fit in one byte (colour temperature in
+  mireds is 153–500, fade time) are **not** forced into the struct. They ride
+  in an optional `frame_params` annotation (`param_1`/`param_2`/`param_3`) that
+  the 19-byte frame encoder consumes. This keeps the struct honest and the
+  Layer-1 ⇄ Layer-3 invariant intact, at the cost of a small side-channel for
+  the "wide" values.
+
+### 3.3 The token-ceiling tripwire for the MCP surface
+
+**ELI5:** The seven MCP tool schemas are shown to an AI client. If the schemas
+get bloated, every tool call costs more tokens (and more money). So we put a
+**ceiling** on the total and a test that fails if it is exceeded.
+
+- **Decision:** the MCP schema must stay under a lexical-token tripwire
+   (currently **< 1,500**, raised from 1,000 in v0.1.11 when two tools were
+  added). Drill 6 in `sim/run_anchor_benchmarks.py` asserts the full seven-tool
+  surface and the token count.
+- **Trade-off:** a hard ceiling forces compact schemas (short names, compact
+  JSON) and guards against accidental bloat. **Honest caveat:** the count is an
+  *exact lexical* count of compact JSON tokens; model-specific BPE tokenizers
+  (GPT, Claude, …) count in different units, so the number is a guardrail, not a
+  promise of identical counts everywhere.
+
+### 3.4 Six documented dead ends — do not repeat
+
+These are the "graves" that cost real debugging time. They live in
+`CLAUDE.md` and `AGENTS.md` and are restated here so the ADR is self-contained:
+
+1. **OpenThread raw-link takeover** — never call `otLinkRawSetReceiveDone()` /
+   `otLinkRawTransmit()` with IPv6 enabled (can return
+   `OT_ERROR_INVALID_STATE`). Use `otLinkSetPcapCallback()` for RX;
+   `esp_ieee802154_transmit()` / `nrf_802154_transmit_raw()` for TX.
+2. **Per-message channel hopping** — never hop channels on ESP32-C6 / H2 /
+   nRF52840; a receiver on the active channel goes deaf. Transmit on the active
+   PAN channel and mark the frame with `0xA5` at byte 9.
+3. **Archived Matter server** — never target `python-matter-server` (archived
+   June 2026 at v8.1.2). Use `matter-js/matterjs-server` at
+   `ws://localhost:5580/ws` with the two-step ACL + Binding transaction.
+4. **Unsafe Z-Wave direct associations** — never let Z-Wave Long Range nodes
+   (`node_id >= 256`) or mismatched S2 classes into direct / multi-channel
+   association plans.
+5. **Zigbee unicast popcorn** — never bind more than two Zigbee lights with
+   separate IEEE unicast bindings; use a ZCL Group and emit vendor preflight
+   writes first (Inovelli `0xFC31`/`0x0012=1`, Aqara `0xFCC0`/`0x0200=0`,
+   Tuya cluster `0x0006`/`0x8004=0`).
+6. **Invalid radio combinations** — never enable `espnow:` on ESP32-H2 (no
+   Wi-Fi PHY), or run concurrent `wifi:` + `zigbee: router: true` on
+   ESP32-C6 (shared RF-switch instability).
+
+---
+
+## Part 4 — The Release Calendar (one-line timeline)
+
+| Tag | Date (Eastern) | One-line summary |
+|---|---|---|
+| v0.1.0 | 2026-10-20 | First public commit: 19-byte frame, SipHash, LEAT, Mesh-RTC, C core. |
+| v0.1.1 | 2026-10-21 | User-facing WARNING logs; surface service exceptions. |
+| v0.1.2 | 2026-10-21 | Fix protocol detection for entity-trigger automations. |
+| v0.1.3 | 2026-10-21 | Direct-configuration payloads in `ship_anchor.compile`. |
+| v0.1.4 | 2026-10-21 | Interactive 4-step configuration wizard. |
+| v0.1.5 | 2026-10-21 | Shared runtime survives multi-entry teardown. |
+| v0.1.6 | 2026-10-21 | `QuirksInspector` live introspection; Inovelli/Hue endpoints fixed. |
+| v0.1.7 | 2026-10-21 | Wizard: multi-select targets, transition time, options flow. |
+| v0.1.8 | 2026-10-21 | Security / PII audit: injection hardening, secret masking. |
+| v0.1.9 | 2026-10-22 | `erase_all` no longer aborts on unsupported/offline bindings. |
+| v0.1.10 | 2026-10-22 | Multi-way sync: shared `group_id` + `NoStatusShare` gesture `0x8`. |
+| v0.1.11 | 2026-10-22 | Target-first wizard + LEAT rule compiler. |
+| v0.1.12 | 2026-10-23 | MCP sync to 7 tools + schema token tripwire. |
+| v0.1.13 | 2026-10-23 | Industry-standard Testing Pyramid (unit + integration). |
+| v0.1.14 | 2026-10-23 | Bidirectional wizard + chain-like multi-hop canopy routing. |
+| v0.1.15 | 2026-10-23 | Visual options-flow dashboard & LEAT inspector. |
+| v0.1.16 | 2026-10-24 | Human-friendly units (Kelvin + percent) with a translation layer. |
+
+---
+
+*ADR written for SHiP v0.1 (Project Anchor) — October 2026.*
+*"ELI5 First, Engineering Second." — The Anchor Mandate.*
