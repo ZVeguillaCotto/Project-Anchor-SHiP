@@ -242,6 +242,32 @@ typedef struct {
     uint32_t        last_seen_ms; /* Local monotonic ms of last genuine frame*/
     ship_hb_health_t state;        /* Cached health verdict (0..3 above)     */
 } ship_hb_state_t;
+
+/* ============================================================================
+ * BURST DEBOUNCE   (v0.1.20 — physical edge-case hardening)
+ * ELI5: A person can mash a button far faster than a single gesture means.
+ *       A 5-tap *intent* is one thing; a 30-tap *stumble* is a bug. If a
+ *       device turned every tap into a separate radio command, a clumsy
+ *       press could flood the mesh with a "command storm". The burst
+ *       debounce is a sliding 500 ms window: the first tap opens it and
+ *       passes, up to SHIP_BURST_MAX_TAPS taps are allowed through, and
+ *       anything beyond that inside the window is SWALLOWED so the radio
+ *       stays quiet. Only genuine (already-decoded) taps count, so a
+ *       replay can never manufacture a fake burst either.
+ * ==========================================================================*/
+
+/* ELI5: 5+ taps in under 500 ms is treated as one burst, not 5 commands. */
+#define SHIP_BURST_MAX_TAPS     5u        /* taps per window before dropping   */
+#define SHIP_BURST_WINDOW_MS    500u      /* the sliding window: 500 ms        */
+
+/* ELI5: one row of burst-debounce state kept per (group, gesture) lane. */
+typedef struct {
+    uint32_t window_start_ms;  /* when the current burst window opened (0=empty)*/
+    uint8_t  taps_in_window;   /* genuine taps counted since the window opened  */
+    uint16_t accepted;         /* total taps the debounce let through           */
+    uint16_t dropped;          /* total taps the debounce swallowed             */
+} ship_burst_state_t;
+
 /* ============================================================================
  * SIPHASH-2-4 KEY SIZE
  * ELI5: The secret key is 16 bytes (128 bits) shared among devices in a group.
@@ -432,6 +458,26 @@ ship_hb_health_t ship_heartbeat_check(ship_hb_state_t *hop,
  *       degradation flag and offer the re-handshake action.
  */
 bool ship_heartbeat_rehandshake_needed(const ship_hb_state_t *hop, uint32_t now_ms);
+
+/*
+ * ship_burst_accept()
+ * ELI5: Called by a device for every genuine gesture it wants to act on.
+ *        Returns true if the tap should produce a radio command, false if
+ *       the debounce swallowed it as part of a burst. The window slides:
+ *       once 500 ms pass without a tap, the count resets and the next tap
+ *       opens a fresh window. Returns false for a NULL state (defensive).
+ *
+ * @param b         The per-lane burst state (updated in place).
+ * @param now_ms    Current local monotonic time in milliseconds.
+ * @return          true = act on this tap; false = swallowed by the burst.
+ */
+bool ship_burst_accept(ship_burst_state_t *b, uint32_t now_ms);
+
+/*
+ * ship_burst_reset()
+ * ELI5: forget any in-flight burst so a new gesture sequence starts clean.
+ */
+void ship_burst_reset(ship_burst_state_t *b, uint32_t now_ms);
 
 #ifdef __cplusplus
 }

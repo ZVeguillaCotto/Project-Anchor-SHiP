@@ -438,3 +438,43 @@ bool ship_heartbeat_rehandshake_needed(const ship_hb_state_t *hop, uint32_t now_
     if (!hop) return true;
     return ship_heartbeat_check((ship_hb_state_t *)hop, now_ms, NULL) != SHIP_HB_HEALTHY;
 }
+
+/* ============================================================================
+ * ship_burst_reset() / ship_burst_accept()   (v0.1.20 — burst debounce)
+ * ELI5: A sliding 500 ms window. The first tap opens the window; up to
+ *       SHIP_BURST_MAX_TAPS taps pass through; anything beyond that inside
+ *       the window is swallowed so a rapid-fire press can never storm the
+ *       radio. After the window elapses (500 ms gap) the count resets.
+ * ==========================================================================*/
+
+void ship_burst_reset(ship_burst_state_t *b, uint32_t now_ms)
+{
+    if (!b) return;
+    b->window_start_ms = now_ms;
+    b->taps_in_window  = 0;
+}
+
+bool ship_burst_accept(ship_burst_state_t *b, uint32_t now_ms)
+{
+    if (!b) return false;
+
+     /* ELI5: first tap, or a gap long enough that the window has elapsed,
+     * opens a fresh window and is always accepted. */
+    if (b->taps_in_window == 0 ||
+        ((uint32_t)now_ms - b->window_start_ms) > SHIP_BURST_WINDOW_MS) {
+        b->window_start_ms = now_ms;
+        b->taps_in_window  = 1;
+        b->accepted++;
+        return true;
+    }
+
+    /* ELI5: a tap inside the live window. Count it; once we exceed the
+     * per-window maximum the extra taps are the storm and are swallowed. */
+    b->taps_in_window++;
+    if (b->taps_in_window > SHIP_BURST_MAX_TAPS) {
+        b->dropped++;
+        return false;
+    }
+    b->accepted++;
+    return true;
+}

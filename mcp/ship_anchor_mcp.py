@@ -167,8 +167,7 @@ def _schema_token_count() -> int:
 from custom_components.ship_anchor.ship_protocol import (
     decode_verify_19b_frame as ship_decode_verify_19b_frame,
     encode_19b_frame as ship_encode_19b_frame,
-    heartbeat_check,
-    heartbeat_rehandshake_needed,
+    diagnose_mesh,
 )
 
 
@@ -302,70 +301,17 @@ async def _call_tool(name: str, arguments: dict) -> Any:
         hops = arguments.get("hops") or []
         if not isinstance(hops, list):
             raise ValueError("hops must be an array of hop heartbeat objects")
-        now_ms = int(arguments.get("now_ms", 0))
-
-        hop_reports: list[dict] = []
-        orphaned = 0
-        degraded = 0
-        needs_rehandshake = False
         for raw in hops:
             if not isinstance(raw, dict):
                 raise ValueError("each hop must be an object")
-            hop = dict(raw)
-            hop.setdefault("hop_index", 0)
-            hop.setdefault("last_counter", 0)
-            hop.setdefault("last_seen_ms", 0)
-            check = heartbeat_check(hop, now_ms)
-            state = check["state"]
-            rehand = heartbeat_rehandshake_needed(hop, now_ms)
-            if rehand:
-                needs_rehandshake = True
-            if state == "orphaned":
-                orphaned += 1
-            elif state == "degraded":
-                degraded += 1
-            hop_reports.append({
-                 "hop_index": int(hop.get("hop_index", 0)),
-                 "last_counter": int(hop.get("last_counter", 0)),
-                 "missed_windows": check["missed_windows"],
-                 "state": state,
-                 "re_handshake_needed": rehand,
-             })
+        now_ms = int(arguments.get("now_ms", 0))
 
-        # ELI5: model the multi-hop latency. Each hop costs one 19-byte SHiP
-        # frame on the air (0.864 ms @ 250 kbps, see the C core); a chain of N
-        # hops is the sum of those per-hop airtimes plus a small per-hop
-        # coordination slack, so the user sees the round-trip a gesture pays.
-        per_hop_ms = 0.864
-        coordination_slack_ms = 0.5
-        hop_count = max(len(hops), 0)
-        modeled_latency_ms = round(
-             hop_count * per_hop_ms + (hop_count - 1 if hop_count else 0)
-             * coordination_slack_ms,
-             3,
-         )
-
-        if not hop_reports:
-            verdict = "no hops supplied — nothing to diagnose"
-        elif needs_rehandshake:
-            verdict = (
-                 "{} orphaned, {} degraded branch(es) need a re-handshake"
-             ).format(orphaned, degraded)
-        else:
-            verdict = "all {} hop(s) healthy".format(hop_count)
-
-        return {
-             "eli5_summary": "Mesh diagnostic: {}".format(verdict),
-             "verdict": verdict,
-             "hop_count": hop_count,
-             "orphaned_hops": orphaned,
-             "degraded_hops": degraded,
-             "needs_re_handshake": needs_rehandshake,
-             "modeled_latency_ms": modeled_latency_ms,
-             "per_hop_airtime_ms": per_hop_ms,
-             "now_ms": now_ms,
-             "hops": hop_reports,
-         }
+        # ELI5 (v0.1.20): the dashboard and this tool now share ONE
+        # verdict. diagnose_mesh() is the single source of truth, so a
+        # hop can't look healthy here and orphaned in the dashboard. It
+        # carries the per-hop status badges (green/yellow/red/white)
+        # plus the orphaned/degraded counts and the modeled latency.
+        return diagnose_mesh(hops, now_ms)
 async def _run_demo() -> dict:
     # >>> MOCK TEST VECTOR ONLY <<< — a well-known placeholder key used purely
     # so the demo produces a deterministic, reproducible frame. It is NOT a
@@ -489,7 +435,7 @@ async def _dispatch(request: dict) -> Optional[dict]:
             "result": {
                 "protocolVersion": params.get("protocolVersion", "2024-11-05"),
                 "capabilities": {"tools": {}},
-                 "serverInfo": {"name": "ship-anchor", "version": "0.1.19"},
+                 "serverInfo": {"name": "ship-anchor", "version": "0.1.20"},
             },
         }
     if method == "ping":

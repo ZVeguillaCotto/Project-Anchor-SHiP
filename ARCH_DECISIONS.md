@@ -339,6 +339,23 @@ real wire goes through it. So the natural model is a **chain**:
   shipping the common case first is the right call. The two are complementary,
   not competing.
 
+### v0.1.20 — Visual Telemetry Dashboard & Physical Edge-Case Hardening
+*(2026-10-25)*
+
+Three pillars, detailed in §3.4 above.
+
+- **Pillar 1 — Visual Telemetry:** the options-flow dashboard now paints a
+  status badge (`🟢/🟡/🔴`) per hop, the degraded/orphaned counts, and a
+   modeled multi-hop latency, and offers an interactive **"Re-handshake /
+  Heal Mesh"** action. Dashboard and MCP `ship_diagnose_mesh` share one
+   `diagnose_mesh()` verdict.
+- **Pillar 2 — Burst Debounce:** a `500 ms` / `5`-tap sliding window in the C
+  core (new **Test 12**, 11/11 → 12/12) and its Python mirror swallow the 6th+
+   rapid tap so a clumsy press can't storm the radio.
+- **Pillar 3 — Power-Loss Recovery:** a disaster drill proving that when an
+   intermediate relay reconnects, one genuine frame heals the hop from ORPHANED
+   to HEALTHY with no user intervention.
+
 ### 3.2 Why C structs are kept rigid, and rich values ride in `frame_params`
 
 **ELI5:** The C struct `ship_leat_entry_t` is the thing that gets `memcpy`'d
@@ -371,7 +388,43 @@ get bloated, every tool call costs more tokens (and more money). So we put a
   (GPT, Claude, …) count in different units, so the number is a guardrail, not a
   promise of identical counts everywhere.
 
-### 3.4 Six documented dead ends — do not repeat
+### 3.4 Visual Telemetry & Physical Edge-Case Hardening (v0.1.20)
+
+**ELI5:** v0.1.18 gave the mesh a *heartbeat* — each hop remembers when it last
+heard a genuine frame and flags itself DEGRADED or ORPHANED. v0.1.20 makes that
+health *visible and actionable* in the dashboard, and hardens two physical edge
+cases a real home will hit.
+
+- **Pillar 1 — Visual Telemetry Dashboard** (`config_flow.py` + `ship_protocol.py`):
+   the options-flow dashboard now renders a status **badge** next to every hop
+   — `🟢 Healthy`, `🟡 Degraded`, `🔴 Orphaned` — plus the degraded/orphaned
+   *counts* and a **modeled multi-hop latency** (one 19-byte frame per hop at
+    250 kbps ≈ 0.864 ms). A dark branch surfaces an interactive
+   **"Re-handshake / Heal Mesh"** action (same `re_handshake` value as v0.1.18,
+   richer label) that re-arms every hop with no device touch. The dashboard and
+   the MCP `ship_diagnose_mesh` tool now share **one** verdict via the new
+    `diagnose_mesh()` in `ship_protocol.py`, so a hop can never look healthy in
+  one place and orphaned in the other.
+- **Pillar 2 — Burst Debounce** (`ship_protocol.c/.h` + `ship_protocol.py`,
+    mirrored as C **Test 12**): a physical edge case — a person can *mash* a
+   button far faster than one gesture means. A sliding `500 ms` window
+    (`SHIP_BURST_WINDOW_MS`) admits up to `5` taps (`SHIP_BURST_MAX_TAPS`) and
+   **swallows the 6th+** so a clumsy press can't storm the radio. A replay can
+  never manufacture a fake burst, because only genuine (already-decoded) taps
+   reach `ship_burst_accept()`. The Python `burst_accept`/`burst_reset` mirror
+   the C core field-for-field; C/Python parity is a release blocker.
+- **Pillar 3 — Power-Loss Recovery** (`tests/test_powerloss_recovery_unit.py`):
+   a disaster drill proving the promise — when an intermediate relay drops
+   offline and **reconnects**, one genuine frame flips the hop from ORPHANED
+   back to HEALTHY and the re-handshake flag clears, **without user
+  intervention**. The DAG test proves one branch heals independently of others.
+- **Engineering ground truth:** the 19-byte frame, SipHash, LEAT, and Mesh-RTC
+  are **unchanged**; the C suite grows **11/11 → 12/12** (new Test 12). The
+   unit/integration suite grows **98 → 106 passed**. The MCP schema stays under
+   its **1,500**-token tripwire (the diagnose tool now *delegates* to
+    `diagnose_mesh`, adding no schema surface).
+
+### 3.5 Six documented dead ends — do not repeat
 
 These are the "graves" that cost real debugging time. They live in
 `CLAUDE.md` and `AGENTS.md` and are restated here so the ADR is self-contained:
@@ -423,6 +476,7 @@ These are the "graves" that cost real debugging time. They live in
 | v0.1.17 | 2026-10-24 | Date-stamped Architectural Decision Record (fossilized project memory). |
 | v0.1.18 | 2026-10-25 | Orphaned-mesh heartbeat + DAG branch routing + 8th MCP diagnostic. |
 | v0.1.19 | 2026-10-25 | Remediation of audit findings A–G (branch isolation, diamond topo, clock-skew parity, IP SSRF guard). |
+| v0.1.20 | 2026-10-25 | Visual telemetry dashboard (status badges + modeled latency) + burst debounce (5 taps / 500 ms) + power-loss recovery drill. |
 
 ---
 

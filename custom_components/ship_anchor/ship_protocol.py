@@ -271,6 +271,162 @@ def heartbeat_rehandshake_needed(hop: dict, now_ms: int) -> bool:
     return heartbeat_check(hop, now_ms)["state"] != HEALTH_HEALTHY
 
 
+
+# ---------------------------------------------------------------------------
+# MESH TELEMETRY    (v0.1.20 — the shared "is my mesh alive?" source of truth)
+# ELI5: both the MCP diagnostic tool and the Home Assistant dashboard render
+# from ONE function so a hop can never look "healthy" in one place and
+# "orphaned" in the other. It mirrors the C core's per-hop heartbeat verdicts
+# and the modeled multi-hop airtime (one 19-byte frame per hop at 250 kbps).
+# ---------------------------------------------------------------------------
+
+# Per-hop airtime of a 19-byte SHiP frame at 250 kbps (the C core's number).
+PER_HOP_AIRTIME_MS = 0.864
+# A small coordination slack between hops in a multi-hop chain.
+COORDINATION_SLACK_MS = 0.5
+
+# ELI5: the visual status badges the dashboard paints next to each hop.
+HEALTHY_BADGE = "🟢"
+DEGRADED_BADGE = "🟡"
+ORPHANED_BADGE = "🔴"
+UNKNOWN_BADGE = "⚪"
+
+# Burst debounce — mirrors SHIP_BURST_MAX_TAPS / SHIP_BURST_WINDOW_MS in C.
+BURST_MAX_TAPS = 5         # taps per window before the extras are swallowed
+BURST_WINDOW_MS = 500      # the sliding window: 500 ms
+
+_BADGE_BY_STATE = {
+    HEALTH_HEALTHY: HEALTHY_BADGE,
+    HEALTH_DEGRADED: DEGRADED_BADGE,
+    HEALTH_ORPHANED: ORPHANED_BADGE,
+    HEALTH_UNKNOWN: UNKNOWN_BADGE,
+}
+_PHRASE_BY_STATE = {
+    HEALTH_HEALTHY: "Healthy",
+    HEALTH_DEGRADED: "Degraded",
+    HEALTH_ORPHANED: "Orphaned",
+    HEALTH_UNKNOWN: "Unknown",
+}
+
+
+def health_badge(state: str) -> str:
+    """ELI5: the emoji badge for a health verdict (green/yellow/red/white)."""
+    return _BADGE_BY_STATE.get(state, UNKNOWN_BADGE)
+
+
+def health_phrase(state: str) -> str:
+    """ELI5: a "badge + word" phrase, e.g. a green/yellow/red badge, for a verdict."""
+    return _BADGE_BY_STATE.get(state, UNKNOWN_BADGE) + " " + _PHRASE_BY_STATE.get(state, "Unknown")
+
+
+def diagnose_mesh(hops: list, now_ms: int = 0) -> dict:
+    """ELI5: the single "is my mesh still alive?" verdict, shared by the
+    MCP tool and the dashboard.
+
+    For every hop it re-runs the heartbeat verdict (healthy / degraded /
+    orphaned / unknown), counts how many branches are degraded or orphaned,
+    decides whether any branch needs a re-handshake, and models the
+    multi-hop latency as one 19-byte frame's airtime per hop plus a small
+    per-hop coordination slack. Pure: it only reads the hop snapshots.
+    """
+    hop_reports = []
+    orphaned = 0
+    degraded = 0
+    needs_rehandshake = False
+    for raw in (hops or []):
+        hop = dict(raw)
+        hop.setdefault("hop_index", 0)
+        hop.setdefault("last_counter", 0)
+        hop.setdefault("last_seen_ms", 0)
+        check = heartbeat_check(hop, now_ms)
+        state = check["state"]
+        rehand = heartbeat_rehandshake_needed(hop, now_ms)
+        if rehand:
+            needs_rehandshake = True
+        if state == HEALTH_ORPHANED:
+            orphaned += 1
+        elif state == HEALTH_DEGRADED:
+            degraded += 1
+        hop_reports.append({
+            "hop_index": int(hop.get("hop_index", 0)),
+            "last_counter": int(hop.get("last_counter", 0)),
+            "missed_windows": check["missed_windows"],
+            "state": state,
+            "re_handshake_needed": rehand,
+            "badge": health_badge(state),
+            "phrase": health_phrase(state),
+        })
+
+    hop_count = max(len(hop_reports), 0)
+    modeled_latency_ms = round(
+        hop_count * PER_HOP_AIRTIME_MS
+        + (hop_count - 1 if hop_count else 0) * COORDINATION_SLACK_MS,
+        3,
+    )
+
+    if not hop_reports:
+        verdict = "no hops supplied — nothing to diagnose"
+    elif needs_rehandshake:
+        verdict = "{} orphaned, {} degraded branch(es) need a re-handshake".format(
+            orphaned, degraded)
+    else:
+        verdict = "all {} hop(s) healthy".format(hop_count)
+
+    return {
+        "eli5_summary": "Mesh diagnostic: {}".format(verdict),
+        "verdict": verdict,
+        "hop_count": hop_count,
+        "orphaned_hops": orphaned,
+        "degraded_hops": degraded,
+        "needs_re_handshake": needs_rehandshake,
+        "modeled_latency_ms": modeled_latency_ms,
+        "per_hop_airtime_ms": PER_HOP_AIRTIME_MS,
+        "now_ms": now_ms,
+        "hops": hop_reports,
+    }
+
+
+# ---------------------------------------------------------------------------
+# BURST DEBOUNCE    (v0.1.20 — physical edge-case hardening, C-core mirror)
+# ELI5: a person can mash a button far faster than one gesture means. A
+# sliding 500 ms window lets the first 5 taps through and SWALLOWS the 6th+
+# so a clumsy press can't flood the mesh with a "command storm". A replay
+# can never manufacture a fake burst because only genuine (already-decoded)
+# taps are fed here — mirroring ship_burst_accept() in the C core.
+# ---------------------------------------------------------------------------
+def burst_reset(state: dict, now_ms: int) -> dict:
+    """ELI5: start a fresh burst window, clearing any in-flight count."""
+    state["window_start_ms"] = int(now_ms)
+    state["taps_in_window"] = 0
+    return state
+
+
+def burst_accept(state: dict, now_ms: int) -> bool:
+    """ELI5: True if this tap should produce a radio command, False if the
+    debounce swallowed it as part of a burst.
+
+    The first tap (or any tap after a 500 ms gap) opens a fresh window and
+    is always accepted. Inside a live window, taps are counted; once the
+    count passes BURST_MAX_TAPS the extras are the storm and are swallowed.
+    A None state is a defensive no-op that swallows (returns False).
+    """
+    if not state:
+        return False
+    now = int(now_ms)
+    if state.get("taps_in_window", 0) == 0 or (
+        now - int(state.get("window_start_ms", 0))) > BURST_WINDOW_MS:
+        state["window_start_ms"] = now
+        state["taps_in_window"] = 1
+        state["accepted"] = int(state.get("accepted", 0)) + 1
+        return True
+    state["taps_in_window"] = int(state.get("taps_in_window", 0)) + 1
+    if state["taps_in_window"] > BURST_MAX_TAPS:
+        state["dropped"] = int(state.get("dropped", 0)) + 1
+        return False
+    state["accepted"] = int(state.get("accepted", 0)) + 1
+    return True
+
+
 __all__ = [
     "decode_verify_19b_frame",
     "encode_19b_frame",
@@ -282,4 +438,17 @@ __all__ = [
     "HEALTH_DEGRADED",
     "HEALTH_ORPHANED",
     "HEALTH_UNKNOWN",
+    "diagnose_mesh",
+    "health_badge",
+    "health_phrase",
+    "burst_accept",
+    "burst_reset",
+    "HEALTHY_BADGE",
+    "DEGRADED_BADGE",
+    "ORPHANED_BADGE",
+    "UNKNOWN_BADGE",
+    "BURST_MAX_TAPS",
+    "BURST_WINDOW_MS",
+    "PER_HOP_AIRTIME_MS",
+    "COORDINATION_SLACK_MS",
 ]

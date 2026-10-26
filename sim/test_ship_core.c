@@ -638,6 +638,52 @@ static bool test_heartbeat_orphan_detection(void)
 }
 
 /* ============================================================================
+ * TEST 12: BURST DEBOUNCE (v0.1.20 — physical edge-case hardening)
+ * ELI5: A person can mash a button far faster than a single gesture means.
+ *       The 500 ms sliding window must let the first 5 taps through and
+ *       SWALLOW the 6th+ so a clumsy press can't storm the radio. A 500 ms
+ *       gap opens a fresh window; a NULL state is a defensive no-op.
+ * ==========================================================================*/
+static bool test_burst_debounce(void)
+{
+    ship_burst_state_t b;
+    memset(&b, 0, sizeof(b));
+
+      /* The first 5 taps in a 500 ms window must all pass through. */
+    bool first_five = true;
+    for (int i = 0; i < 5; i++) {
+        if (!ship_burst_accept(&b, 1000u + (uint32_t)i * 50u)) first_five = false;
+     }
+    TEST_ASSERT(first_five, "The first 5 taps in a burst must be accepted");
+    TEST_ASSERT(b.accepted == 5, "5 accepted taps must be counted");
+    TEST_ASSERT(b.dropped == 0, "No taps dropped before the window fills");
+
+      /* A 6th tap, still inside the 500 ms window, must be SWALLOWED. */
+    bool swallowed = !ship_burst_accept(&b, 1000u + 5 * 50u);
+    TEST_ASSERT(swallowed, "6th tap in the window must be dropped");
+    TEST_ASSERT(b.dropped == 1, "The 6th tap must be counted as dropped");
+    TEST_ASSERT(b.accepted == 5, "Accepted count must stay at 5");
+
+      /* A gap longer than the window opens a fresh window: the next tap
+      * is accepted and the window count resets to one. */
+    bool reopened = ship_burst_accept(&b, 1000u + 1000u);
+    TEST_ASSERT(reopened, "A tap after the window must reopen it");
+    TEST_ASSERT(b.taps_in_window == 1, "A new window must reset the count");
+    TEST_ASSERT(b.accepted == 6, "The reopened tap must be accepted");
+
+      /* ship_burst_reset clears an in-flight burst. */
+    ship_burst_reset(&b, 2000u);
+    TEST_ASSERT(b.taps_in_window == 0, "reset must zero the window count");
+
+      /* NULL pointer safety. */
+    TEST_ASSERT(ship_burst_accept(NULL, 0) == false,
+         "NULL burst state must be a no-op");
+
+    printf("  Burst debounce (5 taps / 500 ms window, 6th swallowed)  \u2713\n");
+    return true;
+}
+
+/* ============================================================================
  * MAIN — Run all tests and print summary
  * ============================================================================ */
 int main(void)
@@ -658,6 +704,7 @@ int main(void)
     RUN_TEST(test_nostatus_share_flag);
     RUN_TEST(test_bad_magic_rejection);
     RUN_TEST(test_heartbeat_orphan_detection);
+    RUN_TEST(test_burst_debounce);
 
     printf("\n=================================================================\n");
     printf("  RESULTS: %d/%d tests passed", tests_passed, tests_run);

@@ -318,3 +318,62 @@ def test_re_handshake_heals_severed_hops() -> None:
     assert entry.data["heartbeat_now_ms"] == 240000
       # Exactly one persistence call.
     assert len(flow.hass.config_entries.updates) == 1
+
+
+# ---------------------------------------------------------------------------
+# LAYER 2 — v0.1.20 Visual Telemetry (badges / counts / modeled latency)
+# ---------------------------------------------------------------------------
+def test_dashboard_renders_telemetry_badges_and_counts() -> None:
+    """ELI5 (v0.1.20): the dashboard paints a badge per hop, tallies the
+    degraded/orphaned branch counts, and shows the modeled latency."""
+    data = _base_entry_data()
+    data["heartbeat_now_ms"] = 240000
+    data["heartbeats"] = [
+        {"hop_index": 1, "last_counter": 9, "last_seen_ms": 240000},
+        {"hop_index": 2, "last_counter": 8, "last_seen_ms": 120000},
+        {"hop_index": 3, "last_counter": 7, "last_seen_ms": 60000},
+    ]
+    flow, _entry_ = _flow_with_entry(data)
+    rendered = flow._render_dashboard(data)
+    # ELI5: every status badge is visible next to its hop.
+    assert "🟢" in rendered
+    assert "🟡" in rendered
+    assert "🔴" in rendered
+    # ELI5: the branch tally reads in plain English.
+    assert "1 degraded" in rendered
+    assert "1 orphaned" in rendered
+    # ELI5: the modeled latency (3 hops = 3*0.864 + 2*0.5 = 3.592 ms).
+    assert "3.592" in rendered
+    # ELI5: a dark branch offers the interactive heal action.
+    assert "Heal Mesh" in rendered
+
+
+def test_dashboard_all_healthy_shows_no_heal_warning() -> None:
+    """ELI5: when every hop is fresh, no heal action is nagged."""
+    data = _base_entry_data()
+    data["heartbeat_now_ms"] = 60000
+    data["heartbeats"] = [
+        {"hop_index": 1, "last_counter": 1, "last_seen_ms": 60000},
+        {"hop_index": 2, "last_counter": 2, "last_seen_ms": 60000},
+    ]
+    flow, _entry_ = _flow_with_entry(data)
+    rendered = flow._render_dashboard(data)
+    assert "🟢" in rendered
+    assert "0 degraded" in rendered
+    assert "0 orphaned" in rendered
+    assert "Re-handshake / Heal Mesh" not in rendered
+
+
+def test_dashboard_heal_action_label_and_value() -> None:
+    """ELI5 (v0.1.20): the dropdown offers the "Re-handshake / Heal Mesh"
+    action; its value is unchanged so the heal logic still fires."""
+    data = _base_entry_data()
+    flow, _entry_ = _flow_with_entry(data)
+    form = _run(flow.async_step_init(None))
+    schema = form["data_schema"]._schema
+    action_key = next(k for k in schema if k.key == "action")
+    options = schema[action_key].config.options
+    values = {o["value"] for o in options}
+    labels = {o["value"]: o["label"] for o in options}
+    assert "re_handshake" in values
+    assert labels["re_handshake"].startswith("Re-handshake / Heal Mesh")
