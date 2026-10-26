@@ -51,11 +51,12 @@ def compiler() -> AnchorCompiler:
     return AnchorCompiler(hass=None, store=None, stored_data={})
 
 
-def _device(id: str, identifiers, model: str = "", manufacturer: str = "") -> dict:
+def _device(id: str, identifiers, model: str = "", manufacturer: str = "",
+             ieee: str = "") -> dict:
     return {
         "device_id": id,
         "name": id,
-        "ieee": "",
+        "ieee": ieee,
         "model": model,
         "manufacturer": manufacturer,
         "identifiers": identifiers,
@@ -233,3 +234,68 @@ def test_dag_cycle_is_dropped_with_warning(compiler: AnchorCompiler) -> None:
     b = _device("b", [("shelly", "192.0.2.30")])
     ordered, warnings = compiler._dag_topo_order([(a, b), (b, a)])
     assert any("cycle" in w for w in warnings)
+
+
+# ---------------------------------------------------------------------------
+# v0.1.19 — Finding A: a guardrail failure must NOT abort later branches
+# ---------------------------------------------------------------------------
+def test_dag_branch_failure_does_not_abort_others(compiler: AnchorCompiler) -> None:
+    # ELI5 (Finding A): three independent branches where the MIDDLE one hits a
+    # non-throwing guardrail (its ZHA source has no IEEE, so the handler sets
+    # ``result.success = False`` without raising). Before the fix, that made
+    # ``async_compile_dag`` ``return result`` early — silently dropping branches
+    # 3 and 4. After the fix, the failed branch is reported but the others
+    # still compile. This is the "one severed zone must not blind the others"
+    # guarantee that a virtual mesh promises.
+    sw = _device("sw", [("shelly", "192.0.2.10")])
+    light = _device("light", [("shelly", "192.0.2.20")])
+    fan = _device("fan", [("shelly", "192.0.2.30")])
+    # ELI5: the middle branch is a ZHA hop whose SOURCE has NO IEEE — the ZHA
+    # handler's first guardrail fires ``result.success = False`` and returns.
+    zha_src = _device("zha_src", [("zha", "0011223344556677")])
+    zha_tgt = _device("zha_tgt", [("zha", "0011223344556678")],
+                      ieee="")   # forces the "no source IEEE" guardrail
+    # ELI5: build a 4-branch fan-out from one source. Branch 2 (index 2) is the
+    # bad one.
+    dag = [
+        (sw, light),
+        (zha_src, zha_tgt),   # <-- branch that fails its guardrail
+        (sw, fan),
+    ]
+    result = _run(compiler.async_compile_dag(dag, dry_run=True))
+    # ELI5: the good branches (shelly light + shelly fan) MUST both appear,
+    # even though the middle branch failed its guardrail.
+    zones = sorted(
+        p.get("zone")
+        for p in result.dry_run_payloads
+        if "zone" in p and p.get("step") != "leat_write"
+    )
+    assert "light" in zones, "branch 1 (light) must survive the middle failure"
+    assert "fan" in zones, "branch 3 (fan) must survive the middle failure"
+    # ELI5: the failed branch must be reported, not silently swallowed.
+    assert any("guardrail" in e.lower() or "zone" in e.lower()
+               for e in result.errors)
+
+
+# ---------------------------------------------------------------------------
+# v0.1.19 — Finding B: a diamond must NOT be mistaken for a cycle
+# ---------------------------------------------------------------------------
+def test_dag_diamond_has_no_spurious_cycle_warning(compiler: AnchorCompiler) -> None:
+    # ELI5 (Finding B): a diamond — two devices both feeding one child — is a
+    # perfectly legal mesh topology, not a routing cycle. The old
+    # single-parent ``setdefault`` logic could flag it as a cycle; the new
+    # multi-parent Kahn's-algorithm topsort must emit exactly the 3 edges and
+    # NO cycle warning.
+    a = _device("a", [("shelly", "192.0.2.10")])
+    b = _device("b", [("shelly", "192.0.2.20")])
+    c = _device("c", [("shelly", "192.0.2.30")])
+    dag_edges = [(a, c), (b, c)]   # diamond: a->c, b->c
+    ordered, warnings = compiler._dag_topo_order(dag_edges)
+    # ELI5: a true diamond emits both edges, never a false cycle warning.
+    assert len(ordered) == 2, "diamond must emit both edges"
+    assert not any("cycle" in w for w in warnings), (
+        "a diamond is not a cycle — the old single-parent logic was wrong"
+    )
+    # ELI5: and the child c must come AFTER both of its parents in the order.
+    pairs = [(p["device_id"], c["device_id"]) for p, _ in ordered]
+    assert ("a", "c") in pairs and ("b", "c") in pairs

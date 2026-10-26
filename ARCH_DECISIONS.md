@@ -280,9 +280,49 @@ many branches at once?".
   are **unchanged**. The LEAT row stays rigid. New tests: 6 heartbeat + 5 DAG +
   6 MCP. Drill 6 now asserts the full **eight-tool** surface.
 
-## Part 3 — Key Design Trade-Offs & Guardrails
+### v0.1.19 — Remediation of Audit Findings A–G
+*(independent security/architecture audit → six targeted fixes)*
 
-### 3.1 Why Chain-Like routing (not Broadcast-Like mesh) for physical canopies
+A de-novo audit of the whole repository surfaced six defects. v0.1.19 fixes the
+high- and moderate-severity ones, each backed by a new test.
+
+- **Finding A — DAG branch isolation (High):** `async_compile_dag` did
+  `if not result.success: return result`, so a *non-throwing* guardrail failure
+  in one branch (e.g. a Z-Wave Long Range block, a ZHA "no IEEE" guardrail)
+  aborted **every later branch** — the opposite of "one severed zone must not
+  blind the others." Fixed by snapshotting `was_success` *before* each hop and
+  only reporting-and-continuing when *that* branch flipped success. New test:
+   `test_dag_branch_failure_does_not_abort_others` (branch 2 fails; branches 1
+  and 3 still land in `bindings_added`).
+- **Finding B — diamond/multi-parent topo-sort (High):** `_dag_topo_order` kept
+  only the *first* parent (`parent_of.setdefault`), so a diamond
+  (`a→c, b→c`) was mis-ordered and the "cycle remnant" fallback raised a
+  **spurious cycle warning**. Fixed with Kahn's algorithm tracking *all* parents
+  plus white/gray/black DFS that flags only a *true* back-edge. New test:
+   `test_dag_diamond_has_no_spurious_cycle_warning`.
+- **Finding C — clock-skew parity (Moderate):** in `ship_heartbeat_check` a
+  *backward* clock skew (`now_ms < last_seen_ms`) underflowed the unsigned
+  `elapsed` into a huge value → false **ORPHANED**. The Python mirror clamped it.
+  Fixed the C core to clamp `elapsed` to 0, restoring C/Python parity. New C
+  assertion + `test_clock_skew_backward_clamps_to_healthy`.
+- **Findings D & E — IP private-range restriction (Moderate):** every
+   target/controller/Shelly IP now passes a strict RFC private-range check
+  (`_is_private_or_doc_ip`: 192.168/16, 10/8, 172.16/12, 127/8, plus the IANA
+  documentation ranges the tests use as safe fakes); a routable public IP is
+  refused (SSRF-style guard). `ShellyHandler.erase` re-validates the stored IP
+  at erase time (Finding E). New tests: `test_public_ip_is_rejected`,
+   `test_private_and_doc_ips_are_allowed`, `test_malformed_ip_is_rejected`.
+- **Finding F — shared LEAT row zone-tagging (Moderate):** LEAT rows are now
+  stamped `zone="shared"` / `hop_index=0` up front, so the per-hop untagged
+  filter no longer sweeps them into the first branch's zone.
+- **Findings G & H — constant naming + erase docs (Low):** `KELVIN_MIN`/
+   `KELVIN_MAX` (both wrongly labelled "Kelvin") are replaced by proper
+   `MIRED_MIN`/`MIRED_MAX`/`KELVIN_MIN`/`KELVIN_MAX`; Matter and Z-Wave now
+  carry explicit `erase` no-ops documenting that their stacks own binding
+   lifecycle.
+- **Engineering ground truth:** the 19-byte frame, SipHash, LEAT, and Mesh-RTC
+  are **unchanged**; the C suite is still **11/11**. Unit/integration suite
+  grows from **92 to 98 passed**.
 
 **ELI5:** A ceiling-fan canopy is a *power switch on the way to the light* — a
 real wire goes through it. So the natural model is a **chain**:
@@ -382,6 +422,7 @@ These are the "graves" that cost real debugging time. They live in
 | v0.1.16 | 2026-10-24 | Human-friendly units (Kelvin + percent) with a translation layer. |
 | v0.1.17 | 2026-10-24 | Date-stamped Architectural Decision Record (fossilized project memory). |
 | v0.1.18 | 2026-10-25 | Orphaned-mesh heartbeat + DAG branch routing + 8th MCP diagnostic. |
+| v0.1.19 | 2026-10-25 | Remediation of audit findings A–G (branch isolation, diamond topo, clock-skew parity, IP SSRF guard). |
 
 ---
 

@@ -121,3 +121,14 @@ class MatterHandler(ProtocolHandler):
             group_id=None,
             preflight_done=True,
         ))
+
+    async def erase(self, compiler: Any, binding: BindingRecord) -> bool:
+        """ELI5 (Finding H): erase is an EXPLICIT NO-OP for Matter.
+         Matter bindings are not removed device-side by this project;
+         the stack (its own fabric, or the zwave_js controller) owns binding
+         lifecycle, so SHiP Anchor only *adds* direct associations. Return
+         False to say honestly 'nothing to undo here' instead of pretending
+         to remove a binding that only the Matter stack itself can
+         remove."""
+        del compiler, binding
+        return False

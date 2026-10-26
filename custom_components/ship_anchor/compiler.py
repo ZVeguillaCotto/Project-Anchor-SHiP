@@ -69,8 +69,14 @@ _LOGGER = logging.getLogger(__name__)
 # units the hardware expects — and back again for display.
 
 # ELI5: the bulb-box range of white light a human is comfortable with.
-KELVIN_MIN = 153      # ~6536 K — the coolest (bluest) practical white
-KELVIN_MAX = 6536     # ~153 mireds — the warmest (most orange) practical white
+# ELI5 (Fix G): the mireds and Kelvin ends are *different* scales, so they
+# get *different* names. 153 mireds ~= 6536 K (the coolest/bluest practical
+# white); 500 mireds ~= 2000 K (the warmest/most-orange). The old code
+# labelled both ends 'KELVIN', which was simply wrong.
+MIRED_MIN = 153        # coolest white - about 6536 K (daylight)
+MIRED_MAX = 500        # warmest white - about 2000 K (candle)
+KELVIN_MIN = 2000      # ~1000000 / MIRED_MAX - the warm end
+KELVIN_MAX = 6536      # ~1000000 / MIRED_MIN - the cool end
 
 
 def kelvin_to_mireds(kelvin: float) -> int:
@@ -83,11 +89,9 @@ def kelvin_to_mireds(kelvin: float) -> int:
     kelvin = float(kelvin)
     if kelvin <= 0:
         # ELI5: 0 K or below is unphysical — snap to the warmest end.
-        return 500
+        return MIRED_MAX
     mireds = round(1000000.0 / kelvin)
-    return max(153, min(500, mireds))
-
-
+    return max(MIRED_MIN, min(MIRED_MAX, mireds))
 def mireds_to_kelvin(mireds: int) -> int:
     """ELI5: the inverse — ``kelvin = 1000000 / mireds`` (rounded).
 
@@ -96,6 +100,7 @@ def mireds_to_kelvin(mireds: int) -> int:
      """
     mireds = int(mireds)
     if mireds <= 0:
+         # ELI5: 0 mireds is unphysical — snap to the coolest end.
         return KELVIN_MAX
     return int(round(1000000.0 / mireds))
 
@@ -419,7 +424,11 @@ class AnchorCompiler:
         def _key(device: dict) -> str:
             return str(device.get("device_id") or device.get("name") or id(device))
 
-        parent_of: dict[str, str] = {}
+# ELI5 (Fix B): keep *every* parent of a node, not just the first one
+        # `setdefault` remembered. A diamond (two devices feeding one child) is
+        # perfectly legal — the child must wait for BOTH parents to compile.
+        parents_of: dict[str, list[str]] = {}
+        children_of: dict[str, list[str]] = {}
         edge_by_pair: dict[tuple[str, str], tuple[dict, dict]] = {}
         all_keys: set[str] = set()
 
@@ -431,44 +440,74 @@ class AnchorCompiler:
             pair = (p_key, c_key)
             if pair not in edge_by_pair:
                 edge_by_pair[pair] = (parent, child)
-            parent_of.setdefault(c_key, p_key)
+                children_of.setdefault(p_key, []).append(c_key)
+                parents_of.setdefault(c_key, []).append(p_key)
 
         cycle_warnings: list[str] = []
         ordered: list[tuple[dict, dict]] = []
-        visited: set[str] = set()
-        visiting: set[str] = set()
 
-        def visit(node_key: str) -> bool:
-            # Returns True on a clean visit, False when a cycle is hit.
-            if node_key in visiting:
-                return False
-            if node_key in visited:
-                return True
-            visiting.add(node_key)
-            p = parent_of.get(node_key)
-            if p is not None and not visit(p):
-                visiting.discard(node_key)
-                return False
-            visiting.discard(node_key)
-            visited.add(node_key)
-            if p is not None and (p, node_key) in edge_by_pair:
-                ordered.append(edge_by_pair[(p, node_key)])
-            return True
+         # ELI5 (Fix B): Kahn's algorithm topsort. A node only drains when ALL
+         # of its parents have drained, so a diamond (a child with two parents)
+         # waits for both and is emitted exactly twice — no spurious cycle.
+        indegree = {k: len(parents_of.get(k, [])) for k in all_keys}
+        ready = sorted(k for k in all_keys if indegree[k] == 0)
+        processed: set[str] = set()
+        while ready:
+            node = ready.pop(0)
+            processed.add(node)
+             # ELI5: emit every edge INTO this node now — its parents are all
+             # already done, so each incoming edge is in order.
+            for p_key in sorted(parents_of.get(node, [])):
+                ordered.append(edge_by_pair[(p_key, node)])
+            for c_key in sorted(children_of.get(node, [])):
+                indegree[c_key] -= 1
+                if indegree[c_key] == 0:
+                    ready.append(c_key)
 
-        for key in list(all_keys):
-            if not visit(key):
+         # ELI5: any node not drained by Kahn still has an unresolved parent —
+         # a genuine routing cycle (a device routing back to its own ancestor).
+         # Emit its remaining edges so the user still previews every branch,
+         # and warn once, honestly.
+        if len(processed) < len(all_keys):
+             # ELI5 (Fix B): detect only TRUE back-edge cycles with white/gray/
+             # black DFS colouring, so a diamond never counts as a cycle.
+            WHITE, GRAY, BLACK = 0, 1, 2
+            color = {k: WHITE for k in all_keys}
+            found_cycle = False
+
+            def dfs(start: str) -> None:
+                nonlocal found_cycle
+                stack = [(start, 0)]
+                while stack:
+                    node, i = stack[-1]
+                    color[node] = GRAY
+                    kids = children_of.get(node, [])
+                    if i < len(kids):
+                        stack[-1] = (node, i + 1)
+                        nxt = kids[i]
+                        if color[nxt] == GRAY:
+                            found_cycle = True
+                        elif color[nxt] == WHITE:
+                            stack.append((nxt, 0))
+                    else:
+                        color[node] = BLACK
+                        stack.pop()
+
+            for key in sorted(all_keys - processed):
+                if color[key] == WHITE:
+                    dfs(key)
+            if found_cycle:
                 cycle_warnings.append(
-                    "ELI5: a routing cycle was detected and the looped edge(s) "
-                    "dropped — a device cannot route back to its own ancestor."
-                )
-
-        # ELI5: emit any edges the DFS left out (cycle remnants) at the end,
-        # so the user still gets an honest preview of every branch.
-        emitted: set[tuple[str, str]] = set((_key(p), _key(c)) for p, c in ordered)
-        for pair, (parent, child) in edge_by_pair.items():
-            if pair not in emitted:
-                ordered.append((parent, child))
-                emitted.add(pair)
+                     "ELI5: a routing cycle was detected and the looped "
+                     "edge(s) dropped — a device cannot route back to its "
+                     "own ancestor."
+                 )
+             # ELI5: emit the cycle-remnant edges so nothing is silently lost.
+            emitted = set((_key(p), _key(c)) for p, c in ordered)
+            for pair, (parent, child) in edge_by_pair.items():
+                if pair not in emitted:
+                    ordered.append((parent, child))
+                    emitted.add(pair)
         return ordered, cycle_warnings
 
     async def async_compile_dag(
@@ -479,18 +518,18 @@ class AnchorCompiler:
         group_name: str = "",
     ) -> CompileResult:
         """
-        ELI5: compile a **mesh** described as a DAG of parent->child edges —
-        the multi-zone, one-to-many "virtual grouping" a real ceiling-canopy
+        ELI5: compile a **mesh** described as a DAG of parent->child edges --
+        the multi-zone, one-to-many 'virtual grouping' a real ceiling-canopy
         mesh is. A linear chain is just a DAG where every node has one child,
         so this is the superset of ``async_compile_multihop``.
-
+        
         Each hop (one edge) is compiled exactly like a single-hop binding,
         tagged with its `hop_index` and `zone` (the child device's id, so a
         one-to-many fan-out lands in the right zone). LEAT rows are compiled
         once and attached up front, shared by every hop. A broken hop is
-        reported but does *not* abort the whole mesh — the remaining branches
+        reported but does *not* abort the whole mesh -- the remaining branches
         still preview, which is the whole point of a virtual group: one
-        severed zone must not blind the others.
+        severed zone must not blind the others (Finding A).
         """
         result = CompileResult()
         raw_edges, warnings = self._normalize_dag_edges(dag)
@@ -500,14 +539,12 @@ class AnchorCompiler:
             for warning in warnings:
                 result.errors.append(warning)
             return result
-
-        # ELI5: order the branches so parents compile before their children,
-        # and drop any physical impossibility (a routing cycle).
+        # ELI5: order the branches so parents compile before their children, and
+        # drop any physical impossibility (a routing cycle).
         edges, cycle_warnings = self._dag_topo_order(raw_edges)
         result.warnings.extend(cycle_warnings)
-
         # LEAT rows are compiled once up front so every hop carries the same
-        # cheat-sheet — shared at frame-encode time across the mesh.
+        # cheat-sheet -- shared at frame-encode time across the mesh.
         if rules:
             compiled_leat = self.build_leat_table(rules)
             if compiled_leat:
@@ -518,8 +555,14 @@ class AnchorCompiler:
                     )
                 )
                 for row in compiled_leat:
-                    result.dry_run_payloads.append({"step": "leat_write", "row": row})
-
+                    # ELI5 (Fix F): LEAT rows are *shared* cheat-sheets for the whole
+                    # mesh, so tag them zone='shared' and stamp a hop_index up front.
+                    # That stops the per-hop untagged filter from sweeping them into
+                    # the first branch's zone (the old bug: rows mislabelled as zone-1).
+                    result.dry_run_payloads.append(
+                        {"step": "leat_write", "row": row,
+                         "hop_index": 0, "zone": "shared"}
+                    )
         node_keys: set[str] = set()
         for index, (parent, child) in enumerate(edges, start=1):
             p_key = str(parent.get("device_id") or parent.get("name") or id(parent))
@@ -543,19 +586,26 @@ class AnchorCompiler:
                     hop_config, self._get_device_registry(),
                     self._get_entity_registry(),
                 )
-            except Exception as exc:      # noqa: BLE001
-                # ELI5: one bad branch must not blind the others — record it
-                # and keep going. This is the resilience a virtual group
-                # promises.
+            except Exception as exc:        # noqa: BLE001
+                # ELI5: one bad branch must not blind the others -- record it and
+                # keep going. This is the resilience a virtual group promises.
                 result.success = False
                 result.errors.append(
                     "Hop {} -> {} (zone {!r}): {}".format(index, index + 1, zone, exc)
                 )
                 continue
             parsed["protocol"] = hop_protocol.name
+            # ELI5 (Fix A): snapshot success *before* this hop compiles so we can
+            # tell whether *this* branch flipped it to False. A non-throwing
+            # guardrail failure (e.g. a Z-Wave Long Range block, a ZHA IEEE
+            # guardrail) must report and keep going, NOT `return` and blind the
+            # later branches.
+            was_success = result.success
             await self._compile_automation(parsed, result, dry_run)
             # ELI5: tag only the payloads *this* hop produced so per-zone
-            # grouping is correct even when one branch fans out.
+            # grouping is correct even when one branch fans out. Always tag --
+            # even after an earlier branch failed -- the zone data must stay
+            # accurate.
             untagged = [
                 p for p in result.dry_run_payloads
                 if isinstance(p, dict) and "hop_index" not in p
@@ -563,36 +613,28 @@ class AnchorCompiler:
             for payload in untagged:
                 payload["hop_index"] = index
                 payload["zone"] = zone
-            if not result.success:
-                # ELI5: a broken branch stops *its* chain, but we report it
-                # and return so the caller can act; branches that compiled
-                # above are already in the payload list.
+            if was_success and not result.success:
                 result.errors.append(
-                    "ELI5: multi-zone branch reported at hop {} -> {} (zone "
-                    "{!r}); other branches still previewed.".format(
+                    "ELI5: branch at hop {} -> {} (zone {!r}) hit a "
+                    "guardrail; the other branches still preview.".format(
                         index, index + 1, zone,
                     )
                 )
-                return result
-
-        # ELI5: summary line so the wizard can show "3 branches, 2 rules".
-        result.warnings.append(
-            "Multi-zone mesh compiled: {} branch(es) across {} node(s).".format(
-                len(edges), len(node_keys)
+        # ELI5 (Fix A): if any branch hit a guardrail, surface one honest
+        # summary -- '1 branch failed, the mesh still previews' -- so the
+        # caller knows the mesh is partial, not silent.
+        if not result.success:
+            result.warnings.append(
+                "ELI5: one or more branches hit a guardrail and were "
+                "skipped; the remaining branches still previewed."
             )
+        # ELI5: summary line so the wizard can show '3 branches, 2 rules'.
+        result.warnings.append(
+             "Multi-zone mesh compiled: {} branch(es) across {} node(s)".format(
+                len(edges), len(node_keys)
+             )
         )
         return result
-
-    # ------------------------------------------------------------------
-    # LEAT (Local Event-Action Table) compilation
-    # ELI5: the wizard can collect "rule sheets" — a gesture (tap count /
-    # hold), an optional time-of-day window, and action parameters
-    # (brightness, colour temp, valve open/close, lock state, …). This
-    # section turns those rows into the exact LEAT table layout that the
-    # C core (`ship_leat_entry_t` in ship_protocol.h) stores on hardware.
-    # Because LEAT lives on the device, the rules keep working even when
-    # the hub is offline.
-    # ------------------------------------------------------------------
     _GESTURE_TO_NIBBLE = {
         "1x Tap": 1, "2x Tap": 2, "3x Tap": 3, "4x Tap": 4,
         "5x Tap": 5, "Hold": 6,

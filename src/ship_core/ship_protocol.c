@@ -410,7 +410,15 @@ ship_hb_health_t ship_heartbeat_check(ship_hb_state_t *hop,
     if (hop->last_seen_ms == 0) {
         state = SHIP_HB_UNKNOWN;
      } else {
-        uint64_t elapsed = (uint64_t)now_ms - (uint64_t)hop->last_seen_ms;
+        /* ELI5 (Fix C): if the local clock skews *backward* (now_ms is earlier
+         * than the last genuine frame), the unsigned subtraction would wrap to a
+         * huge value and falsely report the hop ORPHANED. Clamp elapsed to 0 so
+         * a skewed clock is treated as "just saw it" — matching the Python
+         * mirror, which clamps a negative missed count to 0. */
+        uint64_t elapsed =
+              (uint64_t)now_ms >= (uint64_t)hop->last_seen_ms
+                 ? (uint64_t)now_ms - (uint64_t)hop->last_seen_ms
+                 : 0;
         missed = (uint32_t)(elapsed / SHIP_HEARTBEAT_INTERVAL_MS);
         if (missed <= (SHIP_HEARTBEAT_DEGRADED - 1)) {
             state = SHIP_HB_HEALTHY;

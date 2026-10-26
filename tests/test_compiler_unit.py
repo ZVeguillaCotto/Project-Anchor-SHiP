@@ -275,3 +275,47 @@ def test_normalize_keeps_raw_byte_in_101_to_255_range() -> None:
       # ELI5: a brightness of 200 is unambiguously a raw byte, not a percent.
     out = normalize_rule_units({"gesture": "1x Tap", "brightness": 200})
     assert out["brightness"] == 200
+
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# v0.1.19 -- Finding D: IP private-range restriction (SSRF guard)
+# ---------------------------------------------------------------------------
+from custom_components.ship_anchor.protocols.tasmota import (  # noqa: E402
+    _is_private_or_doc_ip,
+    _validate_ipv4,
+)
+
+
+def test_public_ip_is_rejected() -> None:
+    """ELI5 (Finding D): a routable public IP must be refused so a mistyped
+    target cannot phone home to a stranger's server (an SSRF-style surprise)."""
+    import pytest
+    with pytest.raises(ValueError):
+        _validate_ipv4("8.8.8.8", "target_ip")
+    with pytest.raises(ValueError):
+        _validate_ipv4("1.1.1.1", "target_ip")
+
+
+def test_private_and_doc_ips_are_allowed() -> None:
+    """ELI5: the ranges a home network (and the test suite) actually use must
+    still pass -- 192.168/16, 10/8, 172.16/12, 127/8, and the IANA
+    documentation ranges the tests stand in as safe fakes."""
+    assert _validate_ipv4("192.168.1.5", "ip") == "192.168.1.5"
+    assert _validate_ipv4("10.0.0.1", "ip") == "10.0.0.1"
+    assert _validate_ipv4("172.16.0.1", "ip") == "172.16.0.1"
+    assert _validate_ipv4("127.0.0.1", "ip") == "127.0.0.1"
+    assert _validate_ipv4("192.0.2.10", "ip") == "192.0.2.10"    # TEST-NET-1
+    assert _validate_ipv4("198.51.100.4", "ip") == "198.51.100.4"
+    assert _is_private_or_doc_ip("203.0.113.9") is True
+    assert _is_private_or_doc_ip("8.8.8.8") is False
+
+
+def test_malformed_ip_is_rejected() -> None:
+    """ELI5: a not-quite-IPv4 string (out-of-range octet or wrong shape) must
+    be refused too."""
+    import pytest
+    with pytest.raises(ValueError):
+        _validate_ipv4("1.2.3.256", "ip")    # octet > 255
+    with pytest.raises(ValueError):
+        _validate_ipv4("not.an.ip", "ip")

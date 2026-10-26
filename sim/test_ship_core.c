@@ -618,7 +618,15 @@ static bool test_heartbeat_orphan_detection(void)
     TEST_ASSERT(s4 == SHIP_HB_HEALTHY, "A fresh feed must heal the hop");
     TEST_ASSERT(ship_heartbeat_rehandshake_needed(&hop, later) == false,
         "A healed hop must NOT need a re-handshake");
-
+      /* ELI5 (Fix C): a backward clock skew (now_ms earlier than the last
+        * genuine frame) must NOT underflow into a false ORPHANED verdict. The
+        * unsigned gap is clamped to 0, matching the Python mirror, so the hop
+        * stays HEALTHY with 0 missed windows. */
+    uint32_t sk = ship_heartbeat_check(&hop, 0u, &missed);
+    TEST_ASSERT(sk == SHIP_HB_HEALTHY,
+         "Clock skew (now<last_seen) must clamp to HEALTHY, not ORPHANED");
+    TEST_ASSERT(missed == 0,
+         "Clock skew must clamp missed windows to 0");
      /* NULL pointer safety. */
     TEST_ASSERT(ship_heartbeat_check(NULL, 0, &missed) == SHIP_HB_UNKNOWN,
         "NULL hop must report UNKNOWN");

@@ -19,21 +19,48 @@ from . import BindingRecord, CompileResult, ProtocolHandler
 
 # Reuse the IPv4 validator from the Tasmota handler (single source of truth).
 try:
-    from .tasmota import _validate_ipv4
+    from .tasmota import _is_private_or_doc_ip, _validate_ipv4
 except ImportError:  # pragma: no cover - fallback if module layout changes
-    _IPV4_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+      _IPV4_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
 
-    def _validate_ipv4(value: str, field: str) -> str:
-        if not _IPV4_RE.match(value):
-            raise ValueError(
-                "{} must be a valid IPv4 address, got {!r}".format(field, value)
-            )
-        for octet in value.split("."):
-            if int(octet) > 255:
-                raise ValueError(
-                    "{} has an out-of-range octet: {!r}".format(field, value)
-                )
-        return value
+      def _is_private_or_doc_ip(value: str) -> bool:
+          octets = [int(part) for part in value.split(".")]
+          if octets[0] == 192 and octets[1] == 168:
+              return True
+          if octets[0] == 10:
+              return True
+          if octets[0] == 172 and 16 <= octets[1] <= 31:
+              return True
+          if octets[0] == 127:
+              return True
+          if octets[0] == 192 and octets[1] == 0 and octets[2] == 2:
+              return True
+          if octets[0] == 198 and octets[1] == 51 and octets[2] == 100:
+              return True
+          if octets[0] == 203 and octets[1] == 0 and octets[2] == 113:
+              return True
+          if octets[0] >= 240:
+              return True
+          return False
+
+      def _validate_ipv4(value: str, field: str) -> str:
+          if not _IPV4_RE.match(value):
+              raise ValueError(
+                     "{} must be a valid IPv4 address, got {!r}".format(field, value)
+                 )
+          for octet in value.split("."):
+              if int(octet) > 255:
+                  raise ValueError(
+                         "{} has an out-of-range octet: {!r}".format(field, value)
+                     )
+          if not _is_private_or_doc_ip(value):
+              raise ValueError(
+                     "{} must be a private/local IP address, got public "
+                     "address {!r}.".format(field, value)
+                 )
+          return value
+
+
 
 
 # ELI5: the target command is written inside a JavaScript string in the
@@ -122,11 +149,14 @@ Shelly.addEventHandler(function(e) {{
         ))
 
     async def erase(self, compiler: Any, binding: BindingRecord) -> bool:
-        shelly_ip = binding.source_ieee
-        await compiler._http_post_json(
-            "http://{}/rpc/Script.Stop".format(shelly_ip), {"id": 1}
-        )
-        await compiler._http_post_json(
-            "http://{}/rpc/Script.Delete".format(shelly_ip), {"id": 1}
-        )
-        return True
+         # ELI5 (Finding E): re-validate the stored IP *at erase time*, so a
+         # binding saved before the private-range check (or a mistyped one)
+         # must not let an erase phone home to a public address.
+         shelly_ip = _validate_ipv4(str(binding.source_ieee), "shelly_ip")
+         await compiler._http_post_json(
+              "http://{}/rpc/Script.Stop".format(shelly_ip), {"id": 1}
+          )
+         await compiler._http_post_json(
+              "http://{}/rpc/Script.Delete".format(shelly_ip), {"id": 1}
+          )
+         return True

@@ -102,3 +102,21 @@ def test_feed_updates_nonce_and_timestamp() -> None:
     heartbeat_feed(hop, counter=42, local_mono_ms=50000)
     assert hop["last_counter"] == 42
     assert hop["last_seen_ms"] == 50000
+
+def test_clock_skew_backward_clamps_to_healthy() -> None:
+    """ELI5 (Finding C): a *backward* clock skew (now_ms earlier than the
+    last genuine frame) must NOT be read as a huge gap. The C core clamps the
+    unsigned elapsed time to 0 so the hop stays HEALTHY; this Python mirror
+    must agree -- feeding now_ms=0 with last_seen_ms=60000 (one whole interval)
+    must clamp missed windows to 0, never report ORPHANED.
+
+    This is the parity guard: the C suite (test_ship_core.c) asserts the same
+    verdict for the same inputs, so a divergence between the C and Python cores
+    becomes a release blocker at the unit layer.
+    """
+    hop = _fresh_hop(last_seen_ms=60000, last_counter=7)
+    # ELI5: now_ms is *earlier* than the last frame -- a skewed/rolled clock.
+    check = heartbeat_check(hop, now_ms=0)
+    assert check["state"] == HEALTH_HEALTHY, "skew must clamp, not orphan"
+    assert check["missed_windows"] == 0, "skew must clamp missed to 0"
+    assert heartbeat_rehandshake_needed(hop, now_ms=0) is False

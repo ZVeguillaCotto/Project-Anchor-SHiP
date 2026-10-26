@@ -22,22 +22,60 @@ from . import BindingRecord, CompileResult, ProtocolHandler
 # name containing a ';' (or '|', '@', space, or quote) would let a caller
 # smuggle extra commands into the device. We only accept a safe identifier.
 _SAFE_GROUP_NAME = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
-# ELI5: a dotted-quad IPv4 address (0–255 per octet, checked below).
+# ELI5: a dotted-quad IPv4 address (0-255 per octet, checked below).
 _IPV4_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
 
 
+# ELI5 (Finding D): a device IP is only ever meant to point at equipment *on
+# your own LAN*. A mistyped public IP would let a device phone home to a
+# stranger's server (a "SSRF"-style surprise). So we allow only the addresses
+# a private home network actually uses, PLUS the IANA documentation ranges
+# (192.0.2/24, 198.51.100/24, 203.0.113/24, 240.0.0.0/4) that the project's
+# tests use as fake-but-safe stand-ins. Everything else - a routable public
+# IP - is refused.
+def _is_private_or_doc_ip(value: str) -> bool:
+    """ELI5: is this dotted-quad in a private/doc/loopback range we allow?"""
+    octets = [int(part) for part in value.split(".")]
+    if octets[0] == 192 and octets[1] == 168:   # 192.168/16
+        return True
+    if octets[0] == 10:                        # 10/8
+        return True
+    if octets[0] == 172 and 16 <= octets[1] <= 31:   # 172.16/12
+        return True
+    if octets[0] == 127:                      # loopback
+        return True
+    if octets[0] == 192 and octets[1] == 0 and octets[2] == 2:  # TEST-NET-1
+        return True
+    if octets[0] == 198 and octets[1] == 51 and octets[2] == 100:  # TEST-NET-2
+        return True
+    if octets[0] == 203 and octets[1] == 0 and octets[2] == 113:   # TEST-NET-3
+        return True
+    if octets[0] >= 240:                      # 240/4 reserved/documentation
+        return True
+    return False
+
+
 def _validate_ipv4(value: str, field: str) -> str:
-    """Validate an IPv4 address; raise ValueError if it is not well-formed."""
+    """Validate an IPv4: well-formed AND a private/doc address."""
     if not _IPV4_RE.match(value):
         raise ValueError(
-            "{} must be a valid IPv4 address, got {!r}".format(field, value)
-        )
+              "{} must be a valid IPv4 address, got {!r}".format(field, value)
+          )
     for octet in value.split("."):
         if int(octet) > 255:
             raise ValueError(
-                "{} has an out-of-range octet: {!r}".format(field, value)
-            )
+                  "{} has an out-of-range octet: {!r}".format(field, value)
+              )
+    # ELI5: even a well-formed public IP is refused - a device must not be
+    # able to phone home to the open internet.
+    if not _is_private_or_doc_ip(value):
+        raise ValueError(
+              "{} must be a private/local IP address, got public " 
+              "address {!r}.".format(field, value)
+          )
     return value
+
+
 
 
 def _validate_group_name(value: str) -> str:
