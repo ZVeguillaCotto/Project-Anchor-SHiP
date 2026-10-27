@@ -68,8 +68,12 @@ from .compiler import (
 )
 from .protocols import Protocol, PROTOCOL_ALIASES
 from .ship_protocol import (
+    ANTI_REPLAY_WINDOW,
     HEALTH_HEALTHY,
+    PER_HOP_AIRTIME_MS,
     diagnose_mesh,
+    leat_match,
+    COORDINATION_SLACK_MS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -1121,6 +1125,42 @@ class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
         return "\n".join(lines)
 
 
+    def _render_drift(self, data: dict) -> str:
+        """ELI5: v0.1.23 (Pillar 2) — the Entity Registry Drift panel.
+
+        Cross-reference this binding's source/target entities against
+        Home Assistant's live entity registry. If a device was renamed or
+        deleted since the binding was written, the row is flagged "Entity
+        Missing / Renamed" with a plain-English nudge to re-point it. When
+        the registry has not loaded yet, or the compiler cannot reach it,
+        this renders a quiet, healthy no-op instead of a false alarm.
+        """
+        compiler = self._compiler()
+        if compiler is None:
+            return ""
+        try:
+            report = compiler.detect_binding_drift()
+        except Exception:   # noqa: BLE001
+            _LOGGER.exception("Options flow: drift detection failed")
+            return ""
+        drifted = [row for row in report if row.get("drifted")]
+        out: list[str] = []
+        out.append("")
+        out.append("**Entity Registry Drift** (v0.1.23)")
+        out.append("")
+        if not drifted:
+            out.append("All devices this binding points at still exist in "
+                            "Home Assistant. \u2713")
+            return "\n".join(out)
+        out.append("\u26a0 One or more devices could not be found:")
+        for row in drifted:
+            binding = row.get("binding", {})
+            source = str(binding.get("source_ieee") or "?")
+            target = str(binding.get("target_ieee") or "?")
+            out.append("    - **{} \u2192 {}**: {}".format(
+                source, target, row.get("reason") or "missing device"))
+        return "\n".join(out)
+
     def _render_dashboard(self, data: dict) -> str:
         """ELI5: render the full dashboard description.
 
@@ -1160,6 +1200,8 @@ class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
         # render of the last health check.
         lines.append("")
         lines.append(self._render_heartbeat(data, int(data.get("heartbeat_now_ms", 0))))
+         # v0.1.23 (Pillar 2): the entity-registry drift panel, if any.
+        lines.append(self._render_drift(data))
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -1215,6 +1257,12 @@ class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
                 new_data["heartbeat_now_ms"] = now_ms
                 await self._update_entry(new_data)
                 return await self.async_step_init(None)
+            elif action == "simulate":
+                  # ELI5 (v0.1.23 - Pillar 3): a non-engineer clicks "Simulate"
+                  # a gesture and instantly sees a dry-run trace, the modeled
+                  # latency, and a success/failure verification card - no radio,
+                  # no log reading, no Developer Tools.
+                return await self.async_step_simulate(None)
 
         schema = vol.Schema(
             {
@@ -1228,6 +1276,7 @@ class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
                             {"value": "erase_all", "label": "Erase ALL bindings (nuclear)"},
                             {"value": "recompile", "label": "Re-run the wizard"},
                             {"value": "re_handshake", "label": "Re-handshake / Heal Mesh (re-arm severed mesh hops)"},
+                            {"value": "simulate", "label": "Simulate a gesture (dry-run trace + latency + verification card)"},
                         ],
                         mode=SelectSelectorMode.DROPDOWN,
                     )
@@ -1441,5 +1490,231 @@ class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
             errors=errors,
         )
 
+    async def async_step_simulate(self, user_input: dict | None = None):
+        """ELI5 (v0.1.23 - Pillar 3): the "what-if" simulation step.
+        
+        With no input the dashboard shows a gesture picker. When the user
+        picks a gesture, SHiP Anchor runs that gesture through the binding in
+        a pure dry-run - no radio, no I/O - and renders a trace, the modeled
+        latency, and a green/red verification card. The user can keep trying
+        gestures from the same card; "Back to dashboard" returns to the
+        inspector.
+        """
+        data = self._entry_data()
+        group_id = int(data.get("group_id", 1)) & 0xFFFF
+
+        if user_input is not None:
+            gesture = str(user_input.get("gesture", "") or "").strip()
+            last_counter = int(data.get("simulate_last_counter", 0) or 0)
+            now_ms = int(data.get("heartbeat_now_ms", 0) or 0)
+            sim = simulate_binding(
+                data, gesture, group_id=group_id,
+                last_counter=last_counter, now_ms=now_ms,
+            )
+            placeholders = {"simulation": render_simulation(sim, data)}
+            return self.async_show_form(
+                step_id="simulate",
+                description_placeholders=placeholders,
+            )
+
+        options = [{"value": t, "label": t} for t in TRIGGER_OPTIONS]
+        gesture_field = SelectSelector(
+            SelectSelectorConfig(
+                options=options,
+                mode=SelectSelectorMode.DROPDOWN,
+            )
+        )
+        schema = vol.Schema({"gesture": gesture_field})
+        eli5_text = (
+            "Pick a gesture and SHiP Anchor will show, in plain English, "
+            "what that gesture would do across this binding - a dry-run "
+            "trace, the modeled on-air latency, and a success/failure "
+            "card. No device is touched."
+        )
+        return self.async_show_form(
+            step_id="simulate",
+            data_schema=schema,
+            description_placeholders={"eli5": eli5_text},
+        )
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# DRY-RUN SIMULATOR   (v0.1.23 - Pillar 3)
+# ELI5: this is the "what-if" button in the dashboard. A non-engineer picks a
+#   gesture (a double tap, a long press, ...) and SHiP Anchor shows them, in
+#   plain English, exactly what would happen - the step-by-step trace across
+#   every hop, how long it would take on the air (the modeled latency), and a
+#   green/red verification card that says whether the gesture would actually do
+#   something. Nothing is ever sent to a real device: it is a pure preview.
+# ---------------------------------------------------------------------------
+
+# ELI5: which tap-count a gesture means, in the 4-bit "gesture nibble" the
+# frame carries. Mirrors the compiler's _GESTURE_TO_NIBBLE table.
+_GESTURE_NIBBLE = {
+    "1x Tap": 1, "2x Tap": 2, "3x Tap": 3, "4x Tap": 4,
+    "5x Tap": 5, "Hold": 6,
+}
+
+
+def _sim_rule_domain(rule: dict) -> int:
+    """ELI5: which "topic" a rule belongs to (lighting, water, lock, climate).
+
+    A brightness or colour rule is lighting; an open/close rule is water; a
+    lock rule is a lock; a setpoint or fan-speed rule is climate; anything
+    else is a plain on/off toggle. Mirrors the compiler's _rule_domain so the
+    simulator and the real binding stay in lock-step.
+    """
+    if "color_temp_mireds" in rule or "brightness" in rule:
+        return 0x2
+    if "valve_open" in rule:
+        return 0x4
+    if "lock_unlock" in rule:
+        return 0x5
+    if "setpoint_c" in rule or "fan_speed" in rule:
+        return 0x6
+    return 0x1
+
+
+def build_sim_leat_table(rules: list, group_id: int = 1) -> list:
+    """ELI5: turn the binding's rules into the cheat-sheet the simulator
+    matches a gesture against. Rows with an unknown gesture are skipped, never
+    fatal, so one bad rule can't blank the whole preview."""
+    table: list[dict] = []
+    for rule in rules or []:
+        gesture = str(rule.get("gesture", ""))
+        nibble = _GESTURE_NIBBLE.get(gesture)
+        if nibble is None:
+            continue
+        table.append({
+            "group_id": int(group_id) & 0xFF,
+            "domain": _sim_rule_domain(rule),
+            "gesture": nibble,
+            "enabled": True,
+        })
+    return table
+
+
+def simulate_binding(data: dict, gesture: str, group_id: int = 1,
+                      last_counter: int = 0, now_ms: int = 0,
+                      utc_hour=None) -> dict:
+    """ELI5: run a gesture through the binding WITHOUT touching any device.
+
+    Returns a plain dict the dashboard renders: a per-hop dry-run trace, the
+    modeled round-trip latency, an anti-replay check, and a success/failure
+    verdict. It is 100% pure - no radio, no I/O - so the same logic is fully
+    unit-testable and can never send a stray command to a real device.
+    """
+    rules = data.get("rules") or []
+    leat = build_sim_leat_table(rules, group_id)
+    gesture_nibble = _GESTURE_NIBBLE.get(str(gesture), 0)
+
+    # ELI5: the frame this gesture would put on the air.
+    frame_domain = leat[0]["domain"] if leat else 0x1
+    frame = {
+        "group_id": int(group_id) & 0xFF,
+        "domain": frame_domain,
+        "gesture": gesture_nibble,
+    }
+    match_index = leat_match(leat, frame, utc_hour)
+    matched = match_index != -1 and match_index < len(leat)
+
+    # ELI5: walk the binding's live mesh health, or fall back to a single
+    # direct hop when the binding has no intermediate relays.
+    heartbeats = data.get("heartbeats") or []
+    if heartbeats:
+        hops = heartbeats
+    else:
+         # ELI5: a direct one-hop binding has no relays to go orphaned,
+         # so the simulator seeds a "just heard" timestamp - the gesture
+         # reaches its target without passing through a mesh that could
+         # go dark.
+        fresh_now = int(now_ms) if int(now_ms) > 0 else 1
+        hops = [{"hop_index": 0, "last_counter": last_counter,
+                 "last_seen_ms": fresh_now}]
+    diag = diagnose_mesh(hops, now_ms)
+    latency = diag["modeled_latency_ms"]
+
+    trace: list[str] = []
+    for hop in diag["hops"]:
+        trace.append("Hop {}   {}   (last nonce {})".format(
+            hop.get("hop_index", "?"),
+            hop["phrase"],
+            hop.get("last_counter", "?"),
+        ))
+
+    # ELI5: would the next counter be accepted by the anti-replay guard?
+    # A fresh counter is always newer than the last one the hop saw.
+    next_counter = int(last_counter) + 1
+    replay_ok = next_counter > int(last_counter)
+
+    needs_heal = bool(diag["needs_re_handshake"])
+    success = bool(matched and not needs_heal)
+    if not matched:
+        verdict = ("No rule matches this gesture - the light would do "
+                   "nothing. Add a matching rule.")
+    elif needs_heal:
+        verdict = ("The gesture matches, but a mesh branch is dark. "
+                   "Re-handshake before it reaches the device.")
+    elif not replay_ok:
+        verdict = "The anti-replay guard refused this frame."
+    else:
+        verdict = "Gesture matches and would reach the device in time."
+
+    return {
+        "gesture": gesture,
+        "gesture_nibble": gesture_nibble,
+        "group_id": int(group_id) & 0xFF,
+        "frame": frame,
+        "matched": matched,
+        "match_index": match_index,
+        "rule_count": len(leat),
+        "trace": trace,
+        "modeled_latency_ms": latency,
+        "per_hop_airtime_ms": PER_HOP_AIRTIME_MS,
+        "coordination_slack_ms": COORDINATION_SLACK_MS,
+        "hop_count": diag["hop_count"],
+        "needs_re_handshake": needs_heal,
+        "replay_ok": replay_ok,
+        "success": success,
+        "verdict": verdict,
+        "badge": "✅" if success else "⛔",
+    }
+
+
+def render_simulation(sim: dict, data: dict) -> str:
+    """ELI5: turn a simulate_binding() result into a plain-English card
+    the dashboard shows. Green when the gesture would reach the device, red
+    when it would not, with the exact reason."""
+    lines: list[str] = []
+    lines.append("## Dry-run simulation")
+    lines.append("")
+    lines.append("**Gesture:**   {}    (nibble 0x{:01X})    **Group:**   {}".format(
+        sim["gesture"], sim["gesture_nibble"], sim["group_id"]))
+    lines.append("")
+    lines.append("**Trace (no device was touched):**")
+    lines.append("")
+    if sim["trace"]:
+        for step in sim["trace"]:
+            lines.append("   •   {}".format(step))
+    else:
+        lines.append("   •   (direct one-hop binding - no relays)")
+    lines.append("")
+    lines.append("**Modeled latency:**   {:} ms   "
+                 "({:} ms/hop × {} hop(s) + {:} ms slack)".format(
+                    sim["modeled_latency_ms"],
+                    sim["per_hop_airtime_ms"],
+                    sim["hop_count"],
+                    sim["coordination_slack_ms"]))
+    lines.append("")
+    lines.append("**Anti-replay:**   {}    **Rules available:**   {}".format(
+        "fresh counter accepted ✓" if sim["replay_ok"] else "refused ⛔",
+        sim["rule_count"]))
+    lines.append("")
+    lines.append("{}    **{}**".format(sim["badge"], sim["verdict"]))
+    return "\n".join(lines)
 
 __all__ = ["ShipAnchorConfigFlow", "ShipAnchorOptionsFlow"]

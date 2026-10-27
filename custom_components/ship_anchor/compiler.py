@@ -45,8 +45,19 @@ from .protocols.zwave import (
     ZWAVE_S2_UNAUTHENTICATED,
     ZWAVE_SECURITY_RANK,
 )
+from .ship_protocol import (
+    nonce_window_accept,
+    nonce_window_state,
+    nonce_windows_from_storage,
+    nonce_windows_to_storage,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+# ELI5 (v0.1.23 — Pillar 2): the plain-English label the options dashboard
+# shows when a saved binding points at an entity that has since been renamed
+# or deleted in Home Assistant.
+DRIFT_LABEL = "Entity Missing / Renamed"
 
 
 # ------------------------------------------------------------------
@@ -189,6 +200,7 @@ class AnchorCompiler:
             self._stored_data.setdefault("bindings", []).extend(
                 asdict(binding) for binding in result.bindings_added
             )
+            self._ensure_nonce_windows()
             await self._store.async_save(self._stored_data)
         return result
 
@@ -758,6 +770,150 @@ class AnchorCompiler:
                 _LOGGER.warning("Skipping malformed binding record: %s", raw)
         return out
 
+    # ------------------------------------------------------------------
+    # Replay-window nonce persistence    (v0.1.23 — Pillar 4)
+    # ELI5: every SHiP frame carries a little "nonce" counter that only
+    # ever goes up, so a recorded frame replayed later can't fool a
+    # device. To make that protection survive a Home Assistant reboot we
+    # remember, per group, the *sliding window* of the most recent
+    # nonces each hop has accepted, and we store it right alongside the
+    # bindings in .storage/ship_anchor.bindings. These helpers are the
+    # bridge between the persistent blob and the pure, unit-tested
+    # ship_protocol helpers.
+    # ------------------------------------------------------------------
+    def load_nonce_windows(self) -> dict:
+        """ELI5: read the anti-replay windows that survived the last
+        reboot out of the persistent store, so a replay attempt that
+        straddled a restart is still caught. A missing or malformed blob
+        degrades to an empty dict (a first-ever start-up), never a crash."""
+        return nonce_windows_from_storage(self._stored_data)
+
+    def save_nonce_windows(self, windows: dict) -> None:
+        """ELI5: write the anti-replay windows back into the store so
+        they survive the next reboot. Returns the updated store dict."""
+        nonce_windows_to_storage(self._stored_data, windows)
+
+    async def persist_nonce_windows(self, windows: dict) -> dict:
+        """ELI5: save the windows and flush them to disk in one step,
+        so the protection is on-disk before the next reboot. Returns the
+        updated windows mapping."""
+        nonce_windows_to_storage(self._stored_data, windows)
+        await self._store.async_save(self._stored_data)
+        return windows
+
+    async def record_nonce(self, group_id: int, counter: int,
+                           now_ms: int = 0) -> dict:
+        """ELI5: record that a group has just heard a fresh nonce, and
+        persist the sliding window. Mirrors the C core's anti-replay
+        counter check so the protection is identical on hardware and on
+        the pure-Python engine."""
+        windows = self.load_nonce_windows()
+        window = windows.get(int(group_id) & 0xFFFF,
+                             nonce_window_state(group_id))
+        window = nonce_window_accept(window, counter, now_ms)
+        windows[int(group_id) & 0xFFFF] = window
+        await self.persist_nonce_windows(windows)
+        return window
+
+    def _ensure_nonce_windows(self) -> None:
+        """ELI5: make sure the anti-replay windows key
+        and well-formed right before we flush the store, so a binding-only
+        save can never accidentally drop the replay guard a reboot must
+        survive. A no-op round-trip when the key is already a clean dict."""
+        nonce_windows_to_storage(
+            self._stored_data, nonce_windows_from_storage(self._stored_data)
+        )
+# ------------------------------------------------------------------
+# Entity-registry drift detection     (v0.1.23 — Pillar 2)
+# ELI5: when the integration starts up we cross-check every saved
+# binding against Home Assistant's entity registry. If a binding
+# points at an entity that has since been *renamed* or *deleted*, we
+# flag it "Entity Missing / Renamed" so the dashboard can tell the
+# user, in plain English, that this one binding needs attention.
+# ------------------------------------------------------------------
+    def detect_binding_drift(self) -> list[dict]:
+        """ELI5: cross-reference saved binding records against the live
+        entity registry and return one plain-English report row per
+        binding whose source or target entity no longer resolves.
+        
+        Each row is ``{"binding": <dict>, "drifted": bool, "missing":
+        [entity_id, ...], "reason": <ELI5 string>}``. When the registry is
+        unavailable (e.g. a unit test that stubs ``entity_registry.
+        async_get`` to return ``None``) every row is reported with
+        ``drifted=False`` so start-up never blocks on a registry that
+        simply hasn't loaded yet.
+        """
+        registry = self._get_entity_registry()
+        bindings = self.list_bindings()
+        reports: list[dict] = []
+        for binding in bindings:
+            row: dict[str, Any] = {
+                 "binding": {
+                      "protocol": binding.protocol,
+                      "source_ieee": binding.source_ieee,
+                      "target_ieee": binding.target_ieee,
+                      "group_id": binding.group_id,
+                      "clusters": list(binding.clusters),
+                  },
+                 "drifted": False,
+                 "missing": [],
+                 "reason": "",
+             }
+            if registry is None:
+                 # ELI5: the registry hasn't loaded yet — a healthy no-op
+                 # rather than a false alarm.
+                reports.append(row)
+                continue
+            entity_ids = self._binding_entity_ids(binding)
+            missing = [
+                 entity_id for entity_id in entity_ids
+                 if self._entity_exists(registry, entity_id) is False
+             ]
+            if missing:
+                row["drifted"] = True
+                row["missing"] = missing
+                row["reason"] = (
+                    "ELI5: {label} — a device this binding controls was "
+                    "renamed or removed in Home Assistant. Open the "
+                    "dashboard to re-point or remove it.".format(
+                        label=DRIFT_LABEL
+                    )
+                )
+                _LOGGER.warning(
+                    "SHiP Anchor: binding %s → %s drifted: missing %s",
+                    binding.source_ieee, binding.target_ieee, missing,
+                )
+            reports.append(row)
+        return reports
+
+    @staticmethod
+    def _binding_entity_ids(binding: BindingRecord) -> list[str]:
+        """ELI5: the entity ids a binding depends on — derived from its
+        IEEE identifiers so a rename in the registry is detected."""
+        ids: list[str] = []
+        for ieee in (binding.source_ieee, binding.target_ieee):
+            if ieee:
+                ids.append(str(ieee))
+        return ids
+
+    @staticmethod
+    def _entity_exists(registry: Any, entity_id: str) -> bool:
+        """ELI5: does the live registry still know about this id?
+
+        Home Assistant's real registry exposes ``.entities`` (a mapping of
+        entity_id → entry) and/or ``.async_get(entity_id)``. We support
+        either so the same code runs against the real registry and the
+        test fakes.
+        """
+        async_get = getattr(registry, "async_get", None)
+        if callable(async_get):
+            entry = async_get(entity_id)
+            return entry is not None
+        entities = getattr(registry, "entities", None)
+        if entities is not None:
+            return entity_id in entities
+        return True
+
     async def async_erase_binding(
         self, source_ieee: str, target_ieee: str, protocol: str
     ) -> bool:
@@ -798,6 +954,9 @@ class AnchorCompiler:
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Protocol erase hook failed for %s", removed)
         self._stored_data["bindings"] = remaining
+         # ELI5 (v0.1.23 — Pillar 4): keep the replay guard present so
+         # erasing a binding never drops a group's anti-replay window.
+        self._ensure_nonce_windows()
         await self._store.async_save(self._stored_data)
         _LOGGER.info(
             "SHiP Anchor: erased binding %s %s → %s",
@@ -844,6 +1003,9 @@ class AnchorCompiler:
         # ELI5: the local record is cleared unconditionally — that is what
         # "erase all" means to the user and to the storage file.
         self._stored_data["bindings"] = []
+          # ELI5 (v0.1.23 — Pillar 4): erasing everything also clears the
+          # anti-replay windows, since no group is bound anymore.
+        nonce_windows_to_storage(self._stored_data, {})
         await self._store.async_save(self._stored_data)
         if skipped:
             _LOGGER.warning(

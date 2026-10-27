@@ -527,6 +527,83 @@ in place while the routing structure stays intact.
    JSON-serializable and contains no raw secret). An empty-runtime case proves
    the bundle degrades gracefully.
 
+### v0.1.23 — Enterprise Hardening & Simulation Sprint
+
+A mesh that survives a power outage should also survive a *bad neighbour*: a
+device that transmits half a packet, a corrupted secret stamp, or a replayed
+old recording. v0.1.23 turns "trust me, it is robust" into "here is the
+airbag test that proves it", and closes the last gap between *what the wizard
+says a gesture does* and *what the wire would actually do*. Four pillars, all
+pure-Python and all unit-tested:
+
+1. **Pillar 1 — the fuzz airbag.** `tests/test_fuzz.py` throws thousands of
+   broken frames (truncated, over-long, stale nonces, corrupted SipHash tags,
+   garbage headers, random byte-mutation) at the pure-Python codec and asserts
+   it never crashes — a bad frame is *either* cleanly refused with a typed
+    `ValueError` *or* decoded, never a traceback. A C companion,
+    `sim/test_ship_fuzz.c`, throws the same families at the real
+     `ship_frame_decode` and asserts clean `SHIP_ERR_*` returns plus
+    `SHIP_ERR_NULL_PTR` on null pointers. The C core suite is now **13/13**.
+2. **Pillar 2 — entity-registry drift detection.** At start-up,
+   `detect_binding_drift()` cross-references every saved binding's
+    source/target against Home Assistant's live entity registry. A device that
+   was renamed or deleted is flagged **"Entity Missing / Renamed"** in the
+   options-flow dashboard with a plain-English nudge to re-point it — so a
+    binding that once turned on the kitchen light does not silently go dead
+   when the user renames it.
+3. **Pillar 3 — the dry-run simulator.** A new **"Simulate a gesture"** action
+   in the visual options-flow dashboard. A non-engineer picks a gesture and, in
+    pure preview (no radio, no I/O), sees the step-by-step trace across every
+   hop, the modeled on-air latency, and a green/red verification card saying
+   whether the gesture would actually do something.
+4. **Pillar 4 — anti-replay nonce persistence.** The sliding nonce-tracking
+   windows that defeat replay attacks are now serialized into
+    `.storage/ship_anchor.bindings`, so anti-replay state survives a Home
+   Assistant restart or reboot — a recorded frame stays rejected across
+    reboots, not just within one session.
+
+### 3.8 The fuzz airbag, drift, simulator & persisted nonces (v0.1.23)
+
+- **`tests/test_fuzz.py` (Layer 1, 13 tests)** fuzzes the pure-Python engine
+   with a fixed seed for reproducibility: truncated/over-long frames,
+   stale/replayed counters, corrupted SipHash tags, garbage magic bytes, full
+   byte-mutation, plus fuzzing of the new `nonce_window_*`, `diagnose_mesh`,
+   and `leat_match` surface. Each case catches `ValueError` as a *clean refusal*
+   and fails the test on any *other* unhandled exception — the airbag contract.
+   The Python total is now **143 passed**.
+- **`sim/test_ship_fuzz.c` is the C airbag**, and `test_fuzz_robustness` is
+   wired into `sim/test_ship_core.c`'s `main()` so a single native build keeps
+   the C core honest. It builds a valid baseline frame, then corrupts it in five
+   families (truncation, tag tampering, replay, garbage headers, pure-random
+   bytes) and asserts every outcome is a clean `SHIP_ERR_*` — plus three
+    `SHIP_ERR_NULL_PTR` checks. The C suite is now **13/13**.
+- **Pillar 2 — `compiler.detect_binding_drift()`** is a pure cross-reference
+   of `list_bindings()` against `_get_entity_registry()`. Each row is
+    `{"binding", "drifted", "missing", "reason"}`; when the registry has not
+   loaded yet (`registry is None`) every row is `drifted=False` so start-up
+    never blocks on a registry that is still coming up. The reason string uses
+    the module-level `DRIFT_LABEL = "Entity Missing / Renamed"`. `__init__.py`
+   runs it at start-up (logged at WARNING) and the options-flow dashboard's new
+    `_render_drift` shows the panel.
+- **Pillar 3 — the simulator** lives in `config_flow.py` as the pure functions
+   `simulate_binding`, `render_simulation`, and `build_sim_leat_table`, plus a
+    `async_step_simulate` step reached from the dashboard's action dropdown.
+   It reuses the *same* `leat_match`, `diagnose_mesh`, and heartbeat math the
+   real runtime uses, so the trace is a faithful preview. The verdict priority
+   is no-match > needs-heal > replay-rejected > success.
+- **Pillar 4 — nonce persistence** is the `nonce_window_*` helpers in
+   `ship_protocol.py` (`nonce_window_state`, `nonce_window_accept`,
+    `nonce_windows_from_storage`, `nonce_windows_to_storage`,
+    `ANTI_REPLAY_WINDOW`, `NONCE_WINDOWS_KEY`). `compiler.py` round-trips the
+   windows through `stored_data` on every save (`async_compile`,
+    `async_erase_binding`, `async_erase_all` — the last clears them), so the
+   anti-replay window survives a restart. The C frame, SipHash, LEAT, and
+    Mesh-RTC are **unchanged**; the LEAT row stays rigid.
+- **Strings & version.** `strings.json` / `translations/en.json` gain a
+   `simulate` options step; `manifest.json` and the MCP `serverInfo` both move
+   to `0.1.23`. The MCP surface is still **eight tools**, under the **1,500**
+   lexical-token tripwire (measured **1,405**).
+
 ---
 
 ## Part 4 — The Release Calendar (one-line timeline)
@@ -556,6 +633,7 @@ in place while the routing structure stays intact.
 | v0.1.20 | 2026-10-25 | Visual telemetry dashboard (status badges + modeled latency) + burst debounce (5 taps / 500 ms) + power-loss recovery drill. |
 | v0.1.21 | 2026-10-26 | Pure-Python runtime fallback: optional-native accelerator seam (`runtime.py`), `leat_match` in pure Python, manifest `requires_c_toolchain: false` — HACS/HAOS-safe, no `gcc`. |
 | v0.1.22 | 2026-10-26 | Home Assistant device diagnostics (`diagnostics.py`): "Download diagnostics" bundle of engine + bindings + LEAT + heartbeat, with secret redaction (keys/nonces → `***`, routing preserved). |
+| v0.1.23 | 2026-10-26 | Enterprise hardening: fuzz airbag (`test_fuzz.py` + C `test_ship_fuzz.c`, 13/13), entity-registry drift detection, dry-run gesture simulator, and persisted anti-replay nonce windows. |
 
 ---
 

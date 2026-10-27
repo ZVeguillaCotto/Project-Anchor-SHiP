@@ -135,7 +135,14 @@
             "data": {
                "source_index": "Source to delete"
             }
-         }
+         },
+            "simulate": {
+               "title": "SHiP Anchor - Simulate a Gesture (Dry Run)",
+               "description": "{% if eli5 %}{eli5}{% endif %}\\n\\n{% if simulation %}{simulation}{% endif %}",
+               "data": {
+                  "gesture": "Gesture to simulate"
+               }
+            }
       },
       "error": {
          "no_runtime": "The SHiP Anchor runtime is not loaded. Restart Home Assistant and try again.",
@@ -150,3 +157,4 @@
       }
    }
 }
+

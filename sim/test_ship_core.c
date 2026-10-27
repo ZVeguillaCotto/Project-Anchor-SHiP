@@ -684,6 +684,104 @@ static bool test_burst_debounce(void)
 }
 
 /* ============================================================================
+ * TEST 13: FUZZ AIRBAG (v0.1.23 — Pillar 1)
+ * ELI5: A real mesh hears GARBAGE from the air — half-arrived packets, a
+ *       replayed old recording, a corrupted secret stamp, pure noise. This test
+ *       throws thousands of deliberately broken frames at the REAL C decoder and
+ *       asserts it NEVER crashes: every bad frame is either cleanly refused with
+ *       a typed SHIP_ERR_* code (drop it silently) or decoded. Null pointers are
+ *       refused with SHIP_ERR_NULL_PTR instead of segfaulting. This is the C
+ *       companion to tests/test_fuzz.py.
+ * ============================================================================
+*/
+static bool test_fuzz_robustness(void)
+{
+     /* Build a valid baseline frame to corrupt. */
+    uint8_t base[SHIP_FRAME_SIZE];
+    int enc = ship_frame_encode(base, 0x1234, 0xABCD, 0xFFFF, 7, 1,
+                                 0x01, 0x02, 0xBB, 0xCC, 0xDD, 10, TEST_KEY);
+    TEST_ASSERT(enc == (int)SHIP_FRAME_SIZE, "Fuzz baseline must encode cleanly");
+    TEST_ASSERT(base[9] == SHIP_MAGIC_BYTE, "Baseline magic must be 0xA5");
+
+    ship_frame_19b_t out;
+    int rejections = 0;
+    int accepts = 0;
+    int clean = 0;
+
+     /* FAMILY 1 — truncated & over-long frames: refuse short, ignore padding. */
+    for (size_t len = 0; len <= SHIP_FRAME_SIZE + 6; len++) {
+        int r = ship_frame_decode(base, len, TEST_KEY, 4, &out);
+        clean++;
+        if (r == SHIP_OK) accepts++; else rejections++;
+     }
+
+     /* A deterministic xorshift32 PRNG so the run is reproducible. */
+    uint32_t rng = 0x9E3779B9u;
+    #define RNG_BYTE() ((uint8_t)((rng ^= rng << 13, rng ^= rng >> 17, \
+                    rng ^= rng << 5, rng) & 0xFFu))
+
+     /* FAMILY 2 — corrupted SipHash tags (bytes 17-18). */
+    for (int i = 0; i < 2000; i++) {
+        uint8_t frame[SHIP_FRAME_SIZE];
+        memcpy(frame, base, SHIP_FRAME_SIZE);
+        frame[17] ^= (uint8_t)(RNG_BYTE() | 1u);
+        frame[18] ^= (uint8_t)(RNG_BYTE() | 1u);
+        int r = ship_frame_decode(frame, SHIP_FRAME_SIZE, TEST_KEY,
+                                    (uint16_t)(rng & 0xFFFF), &out);
+        clean++;
+        if (r == SHIP_OK) accepts++; else rejections++;
+     }
+
+     /* FAMILY 3 — stale / replayed nonces (counter at bytes 11-12). */
+    for (int i = 0; i < 2000; i++) {
+        uint8_t frame[SHIP_FRAME_SIZE];
+        memcpy(frame, base, SHIP_FRAME_SIZE);
+        frame[11] = RNG_BYTE();
+        frame[12] = RNG_BYTE();
+        int r = ship_frame_decode(frame, SHIP_FRAME_SIZE, TEST_KEY,
+                                    (uint16_t)(rng & 0xFFFF), &out);
+        clean++;
+        if (r == SHIP_OK) accepts++; else rejections++;
+     }
+
+     /* FAMILY 4 — garbage headers + pure random bytes. */
+    for (int i = 0; i < 2000; i++) {
+        uint8_t frame[SHIP_FRAME_SIZE];
+        memcpy(frame, base, SHIP_FRAME_SIZE);
+        frame[9] = RNG_BYTE(); /* clobber magic */
+        int r = ship_frame_decode(frame, SHIP_FRAME_SIZE, TEST_KEY,
+                                    (uint16_t)(rng & 0xFFFF), &out);
+        clean++;
+        if (r == SHIP_OK) accepts++; else rejections++;
+     }
+    for (int i = 0; i < 2000; i++) {
+        uint8_t frame[SHIP_FRAME_SIZE];
+        for (size_t b = 0; b < SHIP_FRAME_SIZE; b++) frame[b] = RNG_BYTE();
+        int r = ship_frame_decode(frame, SHIP_FRAME_SIZE, TEST_KEY,
+                                    (uint16_t)(rng & 0xFFFF), &out);
+        clean++;
+        if (r == SHIP_OK) accepts++; else rejections++;
+     }
+    #undef RNG_BYTE
+
+     /* FAMILY 5 — null-pointer hardening must refuse, not segfault. */
+    TEST_ASSERT(ship_frame_decode(NULL, SHIP_FRAME_SIZE, TEST_KEY, 0, &out)
+                 == SHIP_ERR_NULL_PTR, "NULL frame must return SHIP_ERR_NULL_PTR");
+    TEST_ASSERT(ship_frame_decode(base, SHIP_FRAME_SIZE, NULL, 0, &out)
+                 == SHIP_ERR_NULL_PTR, "NULL key must return SHIP_ERR_NULL_PTR");
+    TEST_ASSERT(ship_frame_decode(base, SHIP_FRAME_SIZE, TEST_KEY, 0, NULL)
+                 == SHIP_ERR_NULL_PTR, "NULL out must return SHIP_ERR_NULL_PTR");
+
+     /* The airbag must pop at least once: something had to be refused. */
+    TEST_ASSERT(rejections > 0, "Fuzz must produce at least one clean rejection");
+    TEST_ASSERT(clean > 0, "Fuzz must have reached the decoder crash-free");
+
+    printf("  Fuzz airbag: %d broken frames crash-free (%d refused, %d decoded)  \u2713\n",
+            clean, rejections, accepts);
+    return true;
+}
+
+/* ============================================================================
  * MAIN — Run all tests and print summary
  * ============================================================================ */
 int main(void)
@@ -705,6 +803,7 @@ int main(void)
     RUN_TEST(test_bad_magic_rejection);
     RUN_TEST(test_heartbeat_orphan_detection);
     RUN_TEST(test_burst_debounce);
+    RUN_TEST(test_fuzz_robustness);
 
     printf("\n=================================================================\n");
     printf("  RESULTS: %d/%d tests passed", tests_passed, tests_run);

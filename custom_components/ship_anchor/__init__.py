@@ -92,7 +92,28 @@ async def _async_setup_runtime(hass: HomeAssistant) -> None:
     stored_data: dict[str, Any] = await store.async_load() or {}
 
     compiler = AnchorCompiler(hass, store, stored_data)
+     # ELI5 (v0.1.23 — Pillar 4): load the anti-replay nonce windows that
+     # survived the last reboot, so a replay attempt that straddled a
+     # restart is still caught. A missing blob degrades to {} — the very
+     # first start-up simply has no history yet.
+    nonce_windows = compiler.load_nonce_windows()
 
+     # ELI5 (v0.1.23 — Pillar 2): cross-check every saved binding against
+     # the live entity registry so a renamed/deleted device is flagged
+     # "Entity Missing / Renamed" in the dashboard instead of failing
+     # silently. A missing registry is a healthy no-op, never a crash.
+    try:
+        drift_report = compiler.detect_binding_drift()
+    except Exception:  # noqa: BLE001 — start-up must never block on drift
+        _LOGGER.exception("SHiP Anchor: binding drift detection failed")
+        drift_report = []
+    drifted = [row for row in drift_report if row.get("drifted")]
+    if drifted:
+         _LOGGER.warning(
+             "SHiP Anchor: %d saved binding(s) point at a missing/renamed "
+             "entity — flagged for review in the dashboard.",
+            len(drifted),
+         )
     # ELI5 (v0.1.21): pick the runtime engine. We *try* the optional native
      # accelerator first; if the compiled binary is absent (the normal case on
      # a locked-down HAOS box with no gcc, or a plain computer) we fall back
@@ -115,8 +136,14 @@ async def _async_setup_runtime(hass: HomeAssistant) -> None:
          # ELI5: the live engine + its status card, exposed so the dashboard
          # and tests can confirm which engine is running.
         "engine": engine,
-        "engine_summary": summary,
-    }
+        "engine_summary": summary,          # ELI5 (v0.1.23 — Pillar 4): the anti-replay nonce windows that
+          # survived the last reboot, exposed so the dashboard can show
+          # which groups have an active replay guard.
+         "nonce_windows": nonce_windows,
+          # ELI5 (v0.1.23 — Pillar 2): the binding-drift report, one row
+          # per saved binding, exposed so the dashboard can flag a missing
+          # or renamed entity in plain English.
+         "drift_report": drift_report,    }
     # -----------------------------------------------------------------------
     # Service: ship_anchor.compile
     # ELI5: The user (or a scheduled automation) asks SHiP Anchor to read all

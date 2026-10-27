@@ -474,6 +474,133 @@ def leat_match(table, frame, utc_hour=None):
     return -1
 
 
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# ANTI-REPLAY NONCE WINDOW  (v0.1.23 — Pillar 4, replay-window persistence)
+# ELI5: every SHiP frame carries a little counter (the "nonce") that only ever
+#   goes up, so a recorded frame replayed later can't fool a device — its
+#   counter is already old. To make this survive a Home Assistant reboot we
+#   remember, per group, the *sliding window* of the most recent counters each
+#   hop has seen. On the next boot the window is reloaded from
+#    ``.storage/ship_anchor.bindings`` so a replay attempt that straddled a
+#   restart is still caught.
+#
+# These helpers are the single, pure, unit-tested source of truth, mirroring
+# the C core's ``ship_frame_decode`` counter check (accept if ``ctr > last_ctr``
+#   or inside the 4-frame rollover window near 0xFFFF). They never touch I/O,
+#   so the same logic runs on the pure-Python engine and on real hardware.
+# ---------------------------------------------------------------------------
+
+# ELI5: how many recent counters to remember per group. The C core resyncs a
+# counter that rolls over 0xFFFF→0 within 4 frames; we mirror that window so a
+# rollover is never mistaken for a replay.
+ANTI_REPLAY_WINDOW = 4
+
+# The storage key under which the anti-replay windows live, alongside the
+# binding records in ``.storage/ship_anchor.bindings``.
+NONCE_WINDOWS_KEY = "anti_replay_windows"
+
+
+def nonce_window_state(group_id: int, last_counter: int = 0, epoch: int = 0,
+                       seen: list | None = None, now_ms: int = 0) -> dict:
+    """ELI5: build one group's anti-replay window as a JSON-serialisable dict.
+
+    ``last_counter`` is the newest counter the hop has accepted; ``epoch``
+    counts how many times the counter has rolled over 0xFFFF→0; ``seen`` is
+    the sliding set of recent counters (capped at ``ANTI_REPLAY_WINDOW``).
+    """
+    window: dict = {
+        "group_id": int(group_id) & 0xFFFF,
+        "last_counter": int(last_counter) & 0xFFFF,
+        "epoch": int(epoch) & 0xFFFFFFFF,
+        "seen": [int(c) & 0xFFFF for c in (seen or [])],
+        "updated_at": int(now_ms),
+    }
+    # Keep the sliding window bounded so the stored blob stays small.
+    window["seen"] = window["seen"][-ANTI_REPLAY_WINDOW:]
+    return window
+
+
+def nonce_window_accept(window: dict, counter: int, now_ms: int = 0) -> dict:
+    """ELI5: decide whether a freshly-arrived frame may be accepted.
+
+    Mirrors the C ``ship_frame_decode`` rule: a counter is fresh when it is
+    strictly greater than the last one we accepted, OR — when the counter has
+    just rolled over 0xFFFF→0 — when it is still inside the small rollover
+    window. Returns an updated window dict with an added ``accepted`` flag and
+    a freshly trimmed ``seen`` list. A replay (an old or already-seen counter)
+    is rejected, so a recorded frame cannot re-open a device.
+    """
+    counter = int(counter) & 0xFFFF
+    group_id = int(window.get("group_id", 0)) & 0xFFFF
+    last = int(window.get("last_counter", 0)) & 0xFFFF
+    epoch = int(window.get("epoch", 0)) & 0xFFFFFFFF
+    seen = [int(c) & 0xFFFF for c in window.get("seen", [])]
+
+    accepted = False
+    new_last = last
+    new_epoch = epoch
+    new_seen = list(seen)
+
+    if counter not in new_seen:
+        if counter > last:
+            # ELI5: a strictly-fresher counter — the normal happy path.
+            accepted = True
+            new_last = counter
+        elif last >= 0xFFFF - ANTI_REPLAY_WINDOW and counter <= ANTI_REPLAY_WINDOW:
+            # ELI5: a counter not greater than the last is a replay — UNLESS we
+            # are sitting right at the 0xFFFF→0 rollover and the incoming
+            # counter is still inside the small resync window.
+            accepted = True
+            new_last = counter
+            new_epoch = epoch + 1
+        # else: an old counter that is not a rollover → a replay, refused.
+    # A counter we have already accepted this session is a replay even if it
+    # looks newer, so it is refused (it stays out of the window).
+
+    if accepted:
+        new_seen = (new_seen + [counter])[-ANTI_REPLAY_WINDOW:]
+
+    result = nonce_window_state(group_id, new_last, new_epoch, new_seen, now_ms)
+    result["accepted"] = accepted
+    return result
+
+
+def nonce_windows_from_storage(stored_data: dict) -> dict:
+    """ELI5: read the persisted anti-replay windows back out of the store.
+
+    Returns ``{group_id: window_dict}``. A missing or malformed blob degrades
+    to an empty dict so a first-ever start-up (or an older binding file that
+    predates this key) never crashes — the windows are simply rebuilt as
+    frames arrive.
+    """
+    raw = stored_data.get(NONCE_WINDOWS_KEY)
+    windows: dict = {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            if isinstance(value, dict):
+                try:
+                    gid = int(value.get("group_id", key)) & 0xFFFF
+                    windows[gid] = value
+                except (TypeError, ValueError):
+                    continue
+    return windows
+
+
+def nonce_windows_to_storage(stored_data: dict, windows: dict) -> dict:
+    """ELI5: write the anti-replay windows back into the store.
+
+    Produces a JSON-serialisable ``{str(group_id): window_dict}`` mapping that
+    rides alongside the binding records, so the windows survive a Home
+    Assistant restart or reboot. Returns the updated store dict (mutated in
+    place, like the rest of the store helpers).
+    """
+    serialised: dict = {}
+    for group_id, window in (windows or {}).items():
+        serialised[str(int(group_id) & 0xFFFF)] = dict(window)
+    stored_data[NONCE_WINDOWS_KEY] = serialised
+    return stored_data
+
 __all__ = [
     "decode_verify_19b_frame",
     "encode_19b_frame",
@@ -491,6 +618,12 @@ __all__ = [
     "burst_accept",
     "burst_reset",
     "leat_match",
+    "nonce_window_state",
+    "nonce_window_accept",
+    "nonce_windows_from_storage",
+    "nonce_windows_to_storage",
+    "ANTI_REPLAY_WINDOW",
+    "NONCE_WINDOWS_KEY",
     "HEALTHY_BADGE",
     "DEGRADED_BADGE",
     "ORPHANED_BADGE",
