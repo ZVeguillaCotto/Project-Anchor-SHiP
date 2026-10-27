@@ -1,28 +1,34 @@
 {
-  "domain": "ship_anchor",
-  "name": "SHiP Anchor (Smart Home Independent Protocol)",
-  "version": "0.1.20",
-  "documentation": "https://github.com/ZVeguillaCotto/Project-Anchor-SHiP",
-  "issue_tracker": "https://github.com/ZVeguillaCotto/Project-Anchor-SHiP/issues",
-  "codeowners": [
-    "@ZVeguillaCotto"
-  ],
-  "requirements": [
-    "zigpy>=0.60.0",
-    "websockets>=12.0",
-    "aiohttp>=3.9.0"
-  ],
-  "after_dependencies": [
-    "zha",
-    "mqtt",
-    "matter",
-    "zwave_js"
-  ],
-  "dependencies": [],
-  "iot_class": "local_push",
-  "quality_scale": "silver",
-  "config_flow": true,
-  "homekit": {},
-  "ssdp": [],
-  "zeroconf": []
+ "domain": "ship_anchor",
+ "name": "SHiP Anchor (Smart Home Independent Protocol)",
+ "version": "0.1.21",
+ "documentation": "https://github.com/ZVeguillaCotto/Project-Anchor-SHiP",
+ "issue_tracker": "https://github.com/ZVeguillaCotto/Project-Anchor-SHiP/issues",
+ "codeowners": [
+  "@ZVeguillaCotto"
+ ],
+ "requirements": [
+  "zigpy>=0.60.0",
+  "websockets>=12.0",
+  "aiohttp>=3.9.0"
+ ],
+ "after_dependencies": [
+  "zha",
+  "mqtt",
+  "matter",
+  "zwave_js"
+ ],
+ "dependencies": [],
+ "iot_class": "local_push",
+ "quality_scale": "silver",
+ "config_flow": true,
+ "homekit": {},
+ "ssdp": [],
+ "zeroconf": [],
+ "runtime": {
+  "default_engine": "pure_python",
+  "native_accelerator_optional": true,
+  "requires_c_toolchain": false,
+  "note": "Pure-Python runtime ships by default (HACS/HAOS safe, no gcc). The native C accelerator is an optional speed-up, not a dependency."
+ }
 }

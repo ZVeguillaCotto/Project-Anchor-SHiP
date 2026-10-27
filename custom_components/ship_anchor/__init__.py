@@ -52,6 +52,7 @@ except ImportError:
     ConfigType    = Any   # type: ignore[misc,assignment]
 
 from .compiler import AnchorCompiler
+from .runtime import engine_summary, select_engine
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -82,12 +83,30 @@ async def _async_setup_runtime(hass: HomeAssistant) -> None:
 
     compiler = AnchorCompiler(hass, store, stored_data)
 
+    # ELI5 (v0.1.21): pick the runtime engine. We *try* the optional native
+     # accelerator first; if the compiled binary is absent (the normal case on
+     # a locked-down HAOS box with no gcc, or a plain computer) we fall back
+     # transparently to the pure-Python engine, which needs no compiler at all.
+     # Every radio-language operation (framing, SipHash, LEAT, burst, heartbeat,
+     # telemetry) runs identically either way.
+    engine = select_engine()
+    summary = engine_summary()
+    _LOGGER.debug(
+        "SHiP Anchor: runtime engine = %s (native=%s, %d operations)",
+        summary["name"],
+        summary["is_native"],
+        len(summary["operations"]),
+     )
+
     hass.data[DOMAIN] = {
         "compiler": compiler,
         "store": store,
         "bindings": stored_data,
+         # ELI5: the live engine + its status card, exposed so the dashboard
+         # and tests can confirm which engine is running.
+        "engine": engine,
+        "engine_summary": summary,
     }
-
     # -----------------------------------------------------------------------
     # Service: ship_anchor.compile
     # ELI5: The user (or a scheduled automation) asks SHiP Anchor to read all

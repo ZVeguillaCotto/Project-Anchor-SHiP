@@ -427,6 +427,53 @@ def burst_accept(state: dict, now_ms: int) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# LEAT LOOKUP    (v0.1.21 — pure-Python mirror of C ship_leat_match)
+# ELI5: the "cheat sheet" a device keeps of which tap does what. When a
+# frame arrives the device scans its rows for a match on group + domain +
+# gesture (+ the time-of-day window if the clock is synced). This mirrors
+# ship_leat_match() in the C core so the pure-Python engine can match
+# gestures identically to the hardware, with no compiled binary needed.
+# ---------------------------------------------------------------------------
+def leat_match(table, frame, utc_hour=None):
+    """ELI5: find the first LEAT row that matches an incoming frame.
+    
+    Mirrors ``ship_leat_match`` in the C core. A row matches when its
+    ``group_id``, ``domain`` and ``gesture`` all equal the frame's, and
+    (only when ``utc_hour`` is given, i.e. the clock is synced) the hour
+    falls in the row's ``hour_start``..``hour_end`` window (overnight
+    windows wrap past midnight). Returns the matching row index, or
+    ``-1`` when nothing matches.
+    """
+    if not table or not frame:
+        return -1
+    frame_group = int(frame.get("group_id", 0)) & 0xFF
+    frame_domain = int(frame.get("domain", 0)) & 0xFF
+    frame_gesture = int(frame.get("gesture", 0)) & 0xFF
+    time_available = utc_hour is not None
+    current_hour = int(utc_hour) if time_available else 0
+    for index, row in enumerate(table):
+        if not row.get("enabled", True):
+                continue
+        if (int(row.get("group_id", 0)) & 0xFF) != frame_group:
+                continue
+        if (int(row.get("domain", 0)) & 0xFF) != frame_domain:
+                continue
+        if (int(row.get("gesture", 0)) & 0xFF) != frame_gesture:
+                continue
+        if time_available:
+                start = int(row.get("hour_start", 0)) & 0x1F
+                end = int(row.get("hour_end", 0)) & 0x1F
+                if start <= end:
+                        in_window = start <= current_hour <= end
+                else:
+                        in_window = current_hour >= start or current_hour <= end
+                if not in_window:
+                        continue
+        return index
+    return -1
+
+
 __all__ = [
     "decode_verify_19b_frame",
     "encode_19b_frame",
@@ -443,6 +490,7 @@ __all__ = [
     "health_phrase",
     "burst_accept",
     "burst_reset",
+    "leat_match",
     "HEALTHY_BADGE",
     "DEGRADED_BADGE",
     "ORPHANED_BADGE",

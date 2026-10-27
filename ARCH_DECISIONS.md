@@ -450,6 +450,45 @@ These are the "graves" that cost real debugging time. They live in
    Wi-Fi PHY), or run concurrent `wifi:` + `zigbee: router: true` on
    ESP32-C6 (shared RF-switch instability).
 
+### v0.1.21 — Pure-Python Runtime Fallback & HACS Distribution Hardening
+
+A locked-down Home Assistant box (HAOS, some NAS images) ships **no C
+compiler** — no `gcc`, no build tools. v0.1.21 makes that a non-issue:
+the pure-Python `ship_protocol.py` engine is the **default runtime**, and
+the compiled C accelerator is an *optional speed-up*, not a dependency. If
+the native module is missing, corrupt, or was never built, start-up catches
+the failure, logs a friendly debug line, and keeps running on pure Python.
+Every radio-language operation — framing, SipHash, LEAT lookup, burst
+debounce, heartbeat, mesh telemetry — runs identically on both, because they
+share one code path and the C suite still proves the bytes match.
+
+### 3.6 The optional-native accelerator seam (v0.1.21)
+
+- **`runtime.py` is the single engine-selection seam.** `select_engine()`
+  tries to import a `ship_anchor_native` module; on `ImportError` (the
+  normal case — the binary is not shipped in the repo) or on any
+  `Exception` from a corrupt build, it returns the pure-Python engine.
+  It probes that every operation in `OPERATIONS` is callable before
+  trusting a native build, so a half-built accelerator falls back instead of
+  crashing. The chosen engine is exposed via `engine_summary()` and stored
+  on `hass.data[DOMAIN]["engine"]` so the dashboard and tests can confirm
+  which engine is live.
+- **`ship_protocol.py` gained `leat_match()`,** a pure-Python mirror of the
+  C `ship_leat_match(table, count, frame, rtc)` (group + domain + gesture +
+  optional time window). The engine now covers LEAT lookups with no native
+  code, so the whole component — compiler, options flow, handlers, telemetry —
+  runs on pure Python end to end.
+- **`manifest.json` declares the intent in the open:** a `runtime` block —
+   `default_engine: pure_python`, `native_accelerator_optional: true`,
+   `requires_c_toolchain: false` — and its `requirements` list contains only
+  pure-Python wheels (`zigpy`, `websockets`, `aiohttp`), so HACS never forces
+   a host-level C build.
+- **`tests/test_missing_extension.py` (Layer 2, 11 tests)** simulates the
+  three worlds — native *absent*, native *present*, native *corrupt* — and
+  proves the right engine wins in each, that the fallback speaks the full
+  interface, and that framing / SipHash / LEAT / burst / heartbeat /
+  telemetry all run on pure Python with no binary present.
+
 ---
 
 ## Part 4 — The Release Calendar (one-line timeline)
@@ -477,6 +516,7 @@ These are the "graves" that cost real debugging time. They live in
 | v0.1.18 | 2026-10-25 | Orphaned-mesh heartbeat + DAG branch routing + 8th MCP diagnostic. |
 | v0.1.19 | 2026-10-25 | Remediation of audit findings A–G (branch isolation, diamond topo, clock-skew parity, IP SSRF guard). |
 | v0.1.20 | 2026-10-25 | Visual telemetry dashboard (status badges + modeled latency) + burst debounce (5 taps / 500 ms) + power-loss recovery drill. |
+| v0.1.21 | 2026-10-26 | Pure-Python runtime fallback: optional-native accelerator seam (`runtime.py`), `leat_match` in pure Python, manifest `requires_c_toolchain: false` — HACS/HAOS-safe, no `gcc`. |
 
 ---
 
