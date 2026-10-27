@@ -1,0 +1,87 @@
+# ============================================================================
+# SHiP Anchor — .github/workflows/ci.yml
+# ----------------------------------------------------------------------------
+# LAYER 1 — The Kitchen-Table Explanation (ELI5)
+#
+# This file is SHiP Anchor's "night watch". Every time someone pushes code or
+# opens a pull request, GitHub spins up a fresh, clean little computer and runs
+# the whole Testing Pyramid from scratch — so no one can accidentally merge a
+# change that breaks the radio language.
+#
+# It runs three guards, bottom-up, exactly like the project's own pyramid:
+#    1. Python unit + integration tests   (pytest)
+#    2. The C protocol core               (gcc -> 13/13)
+#    3. The disaster-drill simulator      (6/6, under the 1,500-token tripwire)
+#
+# LAYER 2 — The Under-the-Hood Implementation
+#
+# * Python 3.10 is the floor (the project supports 3.10-3.12; `from __future__
+#   import annotations` keeps the 3.10+ union syntax valid on that interpreter).
+# * The C core compiles with -Wall -Wextra -Werror, so a single new compiler
+#   warning fails the build — the project's "ELI5 First, Engineering Second"
+#   quality bar.
+# * The disaster-drill runner (sim/run_anchor_benchmarks.py) is the *source of
+#   truth* for the token tripwire: it asserts the MCP schema stays under the
+#   1,500 lexical-token ceiling and exits non-zero on breach, so this workflow
+#   does not re-implement the check — a failing runner fails the build.
+# ============================================================================
+
+name: CI
+
+'on':
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  testing-pyramid:
+    name: Testing Pyramid (Python + C core + disaster drills)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        # ELI5: a clean Python 3.10 interpreter — the project's version floor.
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install testing dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+
+      - name: Layer 1 + 2 — Python unit & integration tests
+        # pytest is stubbed for Home Assistant / voluptuous by tests/conftest.py,
+        # so no Home Assistant install is needed.
+        run: python -m pytest tests/ -v
+
+      - name: Layer 3 — C protocol core (13/13)
+        # gcc ships on every GitHub Ubuntu runner; no extra toolchain needed.
+        run: |
+          gcc -Wall -Wextra -Werror -std=c11 -DSHIP_PLATFORM_NATIVE \
+              -I src/ship_core \
+              sim/test_ship_core.c \
+              src/ship_core/ship_protocol.c \
+              src/ship_core/ship_radio_hal.c \
+              -o /tmp/test_ship_core
+          /tmp/test_ship_core
+
+      - name: Layer 3 — Fuzz airbag (C core, never crashes)
+        # The randomized byte-mutation harness must never crash the decoder.
+        run: |
+          gcc -Wall -Wextra -Werror -std=c11 -DSHIP_PLATFORM_NATIVE \
+              -I src/ship_core \
+              sim/test_ship_fuzz.c \
+              src/ship_core/ship_protocol.c \
+              src/ship_core/ship_radio_hal.c \
+              -o /tmp/test_ship_fuzz
+          /tmp/test_ship_fuzz
+
+      - name: Layer 3 — Disaster drills & MCP token tripwire (6/6, <1,500 tokens)
+        # run_anchor_benchmarks.py asserts the MCP schema stays under the 1,500
+        # lexical-token ceiling and exits non-zero on breach.
+        run: python3 sim/run_anchor_benchmarks.py

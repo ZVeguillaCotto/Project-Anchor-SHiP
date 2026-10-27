@@ -1,0 +1,76 @@
+# ============================================================================
+# SHiP Anchor — pyproject.toml
+# ----------------------------------------------------------------------------
+# LAYER 1 — The Kitchen-Table Explanation (ELI5)
+#
+# This file tells the "house-keeper" tools (Ruff, Black, isort) how to keep
+# SHiP Anchor's code tidy, so the next person who touches it sees the same
+# clean, consistent style. Think of it as the style guide written down once,
+# in one place, instead of in everyone's head.
+#
+# LAYER 2 — The Under-the-Hood Implementation
+#
+# * Ruff is the workhorse: it is a single fast tool that does both *linting*
+#   (catching problems) and *import sorting* (isort), so contributors run one
+#   command instead of three.
+# * Black is the optional formatter for anyone who prefers its style.
+# * The target version range matches the project: 3.10-3.12.
+# * The Home Assistant custom-component tree is the one place we relax Ruff,
+#   because Home Assistant's own style differs slightly and its import
+#   conventions are governed by the platform.
+#
+# Run them from the repository root:
+#     pip install ruff black
+#     ruff check .
+#     ruff format .
+#     black .
+# ============================================================================
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ship-anchor"
+version = "0.1.24"
+description = "Hub-less, local-first survival protocol for smart homes (Project Anchor)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+# --- Ruff (linter + import sorting) -----------------------------------------
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+exclude = [
+    ".git",
+    "__pycache__",
+    ".history",
+    "src/ship_core",
+    "esphome",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+]
+ignore = [
+    "E501",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["custom_components", "ship_anchor"]
+
+# --- Black (optional formatter) ---------------------------------------------
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+# --- isort (import sorting) --------------------------------------------------
+[tool.isort]
+profile = "black"
+line_length = 88
+known_first_party = ["custom_components", "ship_anchor"]

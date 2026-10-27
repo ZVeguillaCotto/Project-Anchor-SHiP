@@ -3,11 +3,22 @@
 
 > **"What if your smart home kept working even when the hub, router, and cloud are all off?"**
 
-[![C Tests](https://img.shields.io/badge/C%20Core%20Tests-10%2F10%20PASS-brightgreen)](#)
+**In one breath (ELI5):** SHiP Anchor teaches your smart-home devices to talk to
+*each other* directly — a switch whispers to a light in under one-thousandth of a
+second, in a tiny 19-byte radio message, with no hub, no router, and no cloud in
+the middle. So when the power flickers, the Wi-Fi drops, or Home Assistant is
+mid-restart, the things that *matter* (lock the doors, trip the water valve, the
+goodnight scene) keep working anyway. That is **local resilience in under a
+millisecond**.
+
+[![CI](https://github.com/ZVeguillaCotto/Project-Anchor-SHiP/actions/workflows/ci.yml/badge.svg)](https://github.com/ZVeguillaCotto/Project-Anchor-SHiP/actions/workflows/ci.yml)
+[![HACS](https://img.shields.io/badge/HACS-Ready-blue)](#)
+[![Version](https://img.shields.io/badge/version-0.1.24-blue)](#)
+[![C Tests](https://img.shields.io/badge/C%20Core%20Tests-13%2F13%20PASS-brightgreen)](#)
 [![Python Drills](https://img.shields.io/badge/Disaster%20Drills-6%2F6%20PASS-brightgreen)](#)
 [![Frame Size](https://img.shields.io/badge/Frame%20Size-19%20bytes-blue)](#)
 [![Airtime](https://img.shields.io/badge/Airtime-calculated%200.864%20ms-blue)](#)
-[![Latency](https://img.shields.io/badge/Latency-simulated%20estimate-blue)](#)
+[![License](https://img.shields.io/badge/license-MIT-green)](#)
 
 ---
 
@@ -15,7 +26,10 @@
 > native compile checks. They do not verify installation in Home Assistant,
 > communication with real devices, radio timing, or hardware behavior. Treat
 > this project as an experimental PoC; do not use it for safety-critical
-> controls.
+> controls. All three tiers of the Testing Pyramid run automatically on every
+> push and pull request via GitHub Actions (`.github/workflows/ci.yml`); find
+> out how to contribute in [CONTRIBUTING.md](CONTRIBUTING.md) and how to report
+> a vulnerability in [SECURITY.md](SECURITY.md).
 
 ## LAYER 1 — The Kitchen-Table Explanation (ELI5)
 
@@ -137,7 +151,7 @@ byte 18 for the low 8 bits of SipHash over bytes 9..17.
 [TEST 10] test_bad_magic_rejection
   Bad magic and HMAC tamper rejection verified  ✓  [PASS]
 
-RESULTS: 11/11 tests passed    — ALL PASS ✓
+RESULTS: 13/13 tests passed    — ALL PASS ✓
 =================================================================
 ```
 
@@ -170,7 +184,7 @@ DRILL 5 — 30-Light Goodnight Scene
   50-node recovery: simultaneous collisions → 0 unresolved after jittered retry
 
 FINAL REPORT:
-  ✓  Drill 1: C Core + Radio HAL (11/11 C unit tests)
+  ✓  Drill 1: C Core + Radio HAL (13/13 C unit tests + fuzz airbag)
   ✓  Drill 2: Tier 1 Compiler (ZHA membership, Matter 2-step, ZWLR block)
   ✓  Drill 3: Water Leak Reflex (~0.88 ms modeled estimate)
   ✓  Drill 4: 5×-Click Scene + 2:00 AM Mesh-RTC Nightlight
@@ -188,38 +202,53 @@ FINAL REPORT:
 
 ```
 project-anchor-ship/
-├── README.md                                     ← You are here
-├── GUIDE_FOR_HUMANS.md                           ← Plain-English walkthrough
-├── CLAUDE.md                                     ← ELI5-first engineering memory
-├── AGENTS.md                                     ← Agent entry point to project memory
-├── hacs.json                                     ← HACS 3-click install metadata
+├── README.md                                       ← You are here
+├── GUIDE_FOR_HUMANS.md                             ← Plain-English walkthrough
+├── CLAUDE.md                                       ← ELI5-first engineering memory
+├── AGENTS.md                                       ← Agent entry point to project memory
+├── ARCH_DECISIONS.md                               ← Date-stamped design history
+├── SECURITY.md                                     ← How to report a vulnerability
+├── SECURITY_AUDIT.md                               ← The v0.1.0→v0.1.7 PII/injection audit
+├── CONTRIBUTING.md                                 ← How to contribute + the Testing Pyramid
+├── pyproject.toml                                  ← Ruff/Black/isort code-hygiene config
+├── hacs.json                                       ← HACS 3-click install metadata
+├── .github/
+│    └─ workflows/
+│         └─ ci.yml                              ← CI: pytest + C core + drills
 ├── src/
-│   └── ship_core/
-│       ├── ship_protocol.h                       ← 19-byte frame struct + enums
-│       ├── ship_protocol.c                       ← SipHash-2-4, LEAT, Mesh-RTC
-│       └── ship_radio_hal.c                      ← ESP-IDF / Nordic / OpenThread HAL
+│    └─ ship_core/
+│         ├─ ship_protocol.h                        ← 19-byte frame struct + enums
+│         ├─ ship_protocol.c                        ← SipHash-2-4, LEAT, Mesh-RTC
+│         └─ ship_radio_hal.c                       ← ESP-IDF / Nordic / OpenThread HAL
 ├── esphome/
-│   └── components/
-│       └── ship_fastpath/
-│           ├── __init__.py                       ← Hardware guards + ESPHome codegen
-│           ├── ship_fastpath.h                   ← C++ component header
-│           ├── ship_fastpath.cpp                 ← C++ component (setup/loop/RX/TX)
-│           └── example_esp32c6_switch.yaml       ← Copy-paste user YAML
+│    └─ components/
+│         └─ ship_fastpath/
+│             ├─ __init__.py                         ← Hardware guards + ESPHome codegen
+│             ├─ ship_fastpath.h                     ← C++ component header
+│             ├─ ship_fastpath.cpp                   ← C++ component (setup/loop/RX/TX)
+│             └─ example_esp32c6_switch.yaml         ← Copy-paste user YAML
 ├── custom_components/
-│   └── ship_anchor/
-│       ├── manifest.json                         ← HA integration manifest
-│       ├── __init__.py                           ← Persistent Store + service registration
-│       ├── config_flow.py                        ← Bidirectional wizard + canopy step + options flow
-│       ├── automation.py                         ← HA automation normalization
-│       ├── quirks_inspector.py                   ← Live zigpy + static quirks DB
-│       ├── strings.json                          ← Localised wizard strings (ELI5)
-│       └── compiler.py                           ← Multi-protocol Compiler + LEAT builder
+│    └─ ship_anchor/
+│         ├─ manifest.json                           ← HA integration manifest (v0.1.24)
+│         ├─ __init__.py                             ← Persistent Store + service + drift
+│         ├─ config_flow.py                          ← Wizard + options flow + simulator
+│         ├─ automation.py                           ← HA automation normalization
+│         ├─ quirks_inspector.py                     ← Live zigpy + static quirks DB
+│         ├─ ship_protocol.py                        ← Pure-Python runtime (default engine)
+│         ├─ runtime.py                              ← Engine-selection seam (C optional)
+│         ├─ diagnostics.py                          ← HA 'Download diagnostics' bundle
+│         ├─ strings.json                            ← Localised wizard strings (ELI5)
+│         └─ compiler.py                             ← Multi-protocol Compiler + LEAT builder
 ├── mcp/
-│   └── ship_anchor_mcp.py                          ← Eight-tool stdio MCP server + CLI
-└── sim/
-      ├── test_ship_core.c                            ← 11 C unit tests (gcc/clang)
-    ├── check_ship_fastpath_compile.py            ← ESPHome C++ protocol/HAL link check
-    └── run_anchor_benchmarks.py                  ← Six-drill simulator
+│    └─ ship_anchor_mcp.py                          ← Eight-tool stdio MCP server + CLI
+├── tests/
+│    ├─ test_*.py                                  ← Layer 1+2 unit + integration (143 passed)
+│    └─ test_fuzz.py                               ← Fuzz airbag (never crash on bad bytes)
+└─ sim/
+     ├─ test_ship_core.c                           ← 13 C unit tests + fuzz airbag
+     ├─ test_ship_fuzz.c                           ← C fuzz airbag harness
+     ├─ check_ship_fastpath_compile.py             ← ESPHome C++ protocol/HAL link check
+     └─ run_anchor_benchmarks.py                   ← Six-drill simulator
 ```
 
 ---
@@ -228,14 +257,23 @@ project-anchor-ship/
 
 ### Tier 1: Install the Home Assistant Integration
 
-1. For a local/private checkout, copy `custom_components/ship_anchor` into
-   `<HA config>/custom_components/ship_anchor`. Alternatively, if the
-   repository is public and available to your HACS account, add
-   `https://github.com/ZVeguillaCotto/Project-Anchor-SHiP` to HACS as an
-   **Integration** and install **SHiP Anchor**.
-   This repository is private; testers need access to obtain its files.
-2. Restart Home Assistant.
-3. Open **Settings → Devices & services → Add integration → SHiP Anchor**.
+**The easy way — HACS (recommended, 3 clicks).** If you have
+[Home Assistant Community Store (HACS)](https://www.home-assistant.io/hacs/)
+installed:
+
+1. In HACS, open **Community → Integrations** and search for
+   **SHiP Anchor — Smart Home Independent Protocol** and open it.
+2. Click **Download** and choose version `v0.1.24`.
+3. **Restart Home Assistant**, then open
+   **Settings → Devices & services → Add integration → SHiP Anchor**.
+
+HACS will keep the integration up to date from this repository.
+
+**The manual way (no HACS).** Download a release `zip` from the
+[GitHub Releases page](https://github.com/ZVeguillaCotto/Project-Anchor-SHiP/releases),
+unzip `ship_anchor.zip`, and copy the `custom_components/ship_anchor` folder
+into `<HA config>/custom_components/ship_anchor`. Then restart Home Assistant and
+add the integration from **Settings → Devices & services → Add integration**.
 
 The first service call is preview-only by default:
 ```yaml
@@ -300,6 +338,43 @@ python3 mcp/ship_anchor_mcp.py --demo
 
 The schema check reports an exact lexical-token count for its compact JSON
 definition; actual model tokenizer counts can vary by client.
+
+---
+
+## The 3-Tier Testing Pyramid
+
+SHiP Anchor is verified **bottom-up**, like a real testing pyramid: a wide,
+cheap base you run on every change, and a narrow, expensive top you run before a
+release. All three tiers run on an ordinary computer — no Home Assistant box and
+no radio hardware — except that the top two get slower and more realistic as they
+go up.
+
+| Tier | What it is | Command | Target |
+|---|---|---|---|
+| **1 — Unit** | Fast, isolated checks of pure logic: protocol matching, target kind, LEAT row mapping, the multi-hop + DAG compiler, the orphaned-mesh heartbeat, the fuzz airbag, and the eight-tool MCP surface. No Home Assistant, no I/O. | `python3 -m pytest tests/ -v` | **143 passed** |
+| **2 — Integration** | Component tests wiring the wizard, the persistent store (`.storage/ship_anchor.bindings`), and the compiler together, plus the fuzz airbag (`test_fuzz.py`). | `python3 -m pytest tests/ -v` | (included in the 143) |
+| **3 — System / disaster** | The C protocol core, its C fuzz airbag, and the Python disaster drills — the only tiers that touch the real 19-byte encoder, SipHash, LEAT, Mesh-RTC, and radio HAL. | see below | **13/13 + 6/6** |
+
+The base is wide and cheap (run on every change); the top is narrow and
+expensive (run before release). **The invariant to protect:** the LEAT rows
+produced at Tier 1 are *field-for-field identical* to the `ship_leat_entry_t`
+struct asserted by the C suite at Tier 3 — a mismatch between the two is a
+release blocker. GitHub Actions runs all three tiers on every push and pull
+request (`.github/workflows/ci.yml`).
+
+```bash
+# Tier 1 + 2 — unit and integration (needs `pip install pytest`)
+python3 -m pytest tests/ -v
+
+# Tier 3 — C protocol core (13/13, includes the fuzz airbag)
+gcc -Wall -Wextra -Werror -std=c11 -DSHIP_PLATFORM_NATIVE \
+   -I src/ship_core sim/test_ship_core.c \
+   src/ship_core/ship_protocol.c src/ship_core/ship_radio_hal.c \
+   -o /tmp/test_ship_core && /tmp/test_ship_core
+
+# Tier 3 — disaster + MCP drills (6/6, MCP schema under the 1,500-token tripwire)
+python3 sim/run_anchor_benchmarks.py
+```
 
 ---
 

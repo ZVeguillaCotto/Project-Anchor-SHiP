@@ -604,6 +604,45 @@ pure-Python and all unit-tested:
    to `0.1.23`. The MCP surface is still **eight tools**, under the **1,500**
    lexical-token tripwire (measured **1,405**).
 
+### v0.1.24 — Public Launch & Repository Hygiene Sprint
+
+A clean public launch needs three things the private PoC never did: a guard that
+catches a broken change *before* it reaches anyone, a front door for new
+contributors, and a safe way to report a hole. v0.1.24 delivers all three, with
+no change to the wire format — the 19-byte frame, SipHash, LEAT, and Mesh-RTC
+stay exactly as they were.
+
+### 3.9 CI, contributor hygiene & safe vulnerability reporting (v0.1.24)
+
+- **`.github/workflows/ci.yml` is the "night watch".** On every `push` and
+  `pull_request` to `main`, GitHub spins up a clean Ubuntu runner, sets up
+   Python 3.10 (the project floor — `from __future__ import annotations` keeps the
+   3.10+ union syntax valid), and runs the whole Testing Pyramid: pytest
+   (Layer 1+2), the C core + C fuzz airbag (Layer 3, `13/13`), and the disaster
+   drills. The MCP token tripwire is enforced by `run_anchor_benchmarks.py`
+  itself (it exits non-zero on a breach), so the workflow does not re-implement
+   the check.
+- **`pyproject.toml` is the house-keeper's rulebook.** It configures
+   [Ruff](https://docs.astral.sh/ruff/) (lint + import sorting), Black, and
+   isort for a consistent style; `line-length = 88`, `target-version = py310`,
+  and the C/ESPHome trees are excluded from the Python lint. Contributors run
+   `ruff check . && ruff format .`.
+- **`SECURITY.md` is the safe front door.** It follows the GitHub security-policy
+   shape (supported versions, private reporting via Security Advisories, in/out
+   of scope) and is written ELI5-first, cross-referencing the existing
+    `SECURITY_AUDIT.md` "security diary".
+- **`README.md` / `CONTRIBUTING.md` were polished, not rewritten.** The README
+   gained an engaging one-breath ELI5 intro, CI/HACS/version badges, a
+   HACS-first 3-click install path, and a clean 3-tier Testing-Pyramid section;
+  its stale `11/11`/`10/10` C-suite counts were corrected to `13/13`.
+   `CONTRIBUTING.md` now documents the full pyramid (with the
+    `143 passed` / `13/13` / `6/6` targets), the lint step, and a pointer to
+    `SECURITY.md`.
+- **Version.** `manifest.json` and the MCP `serverInfo` both move to `0.1.24`;
+  `pyproject.toml` records `version = "0.1.24"`. The MCP surface is still
+   **eight tools**, under the **1,500** lexical-token tripwire. No new runtime
+   surface, so the C frame and the LEAT row stay rigid.
+
 ---
 
 ## Part 4 — The Release Calendar (one-line timeline)
@@ -634,6 +673,7 @@ pure-Python and all unit-tested:
 | v0.1.21 | 2026-10-26 | Pure-Python runtime fallback: optional-native accelerator seam (`runtime.py`), `leat_match` in pure Python, manifest `requires_c_toolchain: false` — HACS/HAOS-safe, no `gcc`. |
 | v0.1.22 | 2026-10-26 | Home Assistant device diagnostics (`diagnostics.py`): "Download diagnostics" bundle of engine + bindings + LEAT + heartbeat, with secret redaction (keys/nonces → `***`, routing preserved). |
 | v0.1.23 | 2026-10-26 | Enterprise hardening: fuzz airbag (`test_fuzz.py` + C `test_ship_fuzz.c`, 13/13), entity-registry drift detection, dry-run gesture simulator, and persisted anti-replay nonce windows. |
+| v0.1.24 | 2026-10-27 | Public launch & hygiene: GitHub Actions CI (pytest + C core + fuzz + drills), `pyproject.toml` (Ruff/Black/isort), `SECURITY.md`, and polished README/CONTRIBUTING. |
 
 ---
 
