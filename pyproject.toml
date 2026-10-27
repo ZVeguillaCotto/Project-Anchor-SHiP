@@ -32,7 +32,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ship-anchor"
-version = "0.1.24"
+version = "0.1.25"
 description = "Hub-less, local-first survival protocol for smart homes (Project Anchor)."
 readme = "README.md"
 requires-python = ">=3.10"

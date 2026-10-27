@@ -645,6 +645,20 @@ stay exactly as they were.
 
 ---
 
+### v0.1.25 - Options-Flow Recursion Guard & Regression Lock
+
+A report came in that clicking the gear / "Configure" icon on the SHiP Anchor card could loop the options-flow constructor back into itself and answer with a 500. v0.1.25 investigates that concern and locks the invariant in place - with **no change to the wire format**: the 19-byte frame, SipHash, LEAT, and Mesh-RTC stay exactly as they were.
+
+### 3.10 The gear-icon 500, and why the constructor is already acyclic (v0.1.25)
+
+- **Honest finding: there was no live loop to fix.** In the shipping code, `async_get_options_flow` (a `@classmethod` on `ShipAnchorConfigFlow`) is *defined once and never called from within the integration's own Python* - its one-and-only caller is Home Assistant, which invokes it once per "Configure" click and hands back the resulting flow. `ShipAnchorOptionsFlow.__init__` only copies the entry onto itself (`self._config_entry`, `self._entry`) and calls `super().__init__(config_entry)`. There is no `__new__` / `__init_subclass__` / metaclass re-entry, and the tight-stack reproduction (`sys.setrecursionlimit(80)`) completes the full open path (`async_get_options_flow` -> `async_step_init(None)`) without overflowing. We therefore did **not** fabricate a fix for non-broken code.
+- **The guard we *did* add is a comment that names the invariant.** `__init__` now carries an ELI5 note stating the "no gear-icon 500" rule: the constructor must never call `async_get_options_flow` (or any `async_step_*`) on the way back in. It is behaviour-preserving - Python only re-reads a comment - so the existing dashboard is untouched.
+- **A regression test locks the guarantee.** New `tests/test_options_flow_recursion.py` (Layer 1 + 2, 5 tests) exercises the exact gear-icon open path, runs it under a deliberately small stack budget so any *future* re-entrancy fails the instant it starts, and asserts the class MRO is acyclic (no class appears twice; the chain ends at `object`). It also keeps `async_get_options_flow` reachable for Home Assistant without the integration calling itself.
+- **`ELI5 First, Engineering Second` held.** The report's symptom - a 500 from the gear icon - is explained in plain language *before* the `super()` / MRO detail, and the test docstrings lead with the kitchen-table picture so a future maintainer sees *why* before *how*.
+- **Version.** `manifest.json` and the MCP `serverInfo` both move to `0.1.25`. The MCP surface is still **eight tools**, under the **1,500** lexical-token tripwire - no new schema surface, so the drills stay `6/6` and the C core stays `13/13`.
+
+---
+
 ## Part 4 — The Release Calendar (one-line timeline)
 
 | Tag | Date (Eastern) | One-line summary |
@@ -674,6 +688,7 @@ stay exactly as they were.
 | v0.1.22 | 2026-10-26 | Home Assistant device diagnostics (`diagnostics.py`): "Download diagnostics" bundle of engine + bindings + LEAT + heartbeat, with secret redaction (keys/nonces → `***`, routing preserved). |
 | v0.1.23 | 2026-10-26 | Enterprise hardening: fuzz airbag (`test_fuzz.py` + C `test_ship_fuzz.c`, 13/13), entity-registry drift detection, dry-run gesture simulator, and persisted anti-replay nonce windows. |
 | v0.1.24 | 2026-10-27 | Public launch & hygiene: GitHub Actions CI (pytest + C core + fuzz + drills), `pyproject.toml` (Ruff/Black/isort), `SECURITY.md`, and polished README/CONTRIBUTING. |
+| v0.1.25 | 2026-10-27 | Options-flow recursion guard: no live loop found (the constructor is already acyclic); added an ELI5 invariant comment and `tests/test_options_flow_recursion.py` (5 tests) to lock it in. No wire-format change. |
 
 ---
 

@@ -1018,8 +1018,17 @@ class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
 
     def __init__(self, config_entry: Any) -> None:
         super().__init__(config_entry)
-        # ELI5: the options flow is opened on a *specific* config entry, so
-        # keep a reference to it for the whole flow. ``hass`` is injected by
+         # ELI5 (v0.1.25): the "no gear-icon 500" invariant. This constructor
+         # must ONLY copy the entry onto itself and call the parent — it must
+         # never call ``async_get_options_flow`` (or any ``async_step_*``) on
+         # the way back in. Home Assistant opens the dialog by calling
+         # ``async_get_options_flow`` -> ``ShipAnchorOptionsFlow(entry)``; if
+         # ``__init__`` (or a subclass ``__init_subclass__`` / ``__new__``)
+         # ever re-entered that path, clicking the gear icon would loop the
+         # stack until it overflowed. The one-and-only caller of
+         # ``async_get_options_flow`` is Home Assistant itself, so this class
+         # keeps no reference to it. Locked in by
+         # tests/test_options_flow_recursion.py.
         # Home Assistant (and by the test stub) before the first step runs.
         self._config_entry = config_entry
         self._entry = config_entry
