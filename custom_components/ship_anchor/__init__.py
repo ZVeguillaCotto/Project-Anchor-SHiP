@@ -54,6 +54,16 @@ except ImportError:
 from .compiler import AnchorCompiler
 from .runtime import engine_summary, select_engine
 
+# ELI5 (v0.1.22): re-export the Home Assistant diagnostics entry points so the
+# "Download diagnostics" button — which Home Assistant wires up automatically
+# when it finds ``async_get_device_diagnostics`` /
+# ``async_get_config_entry_diagnostics`` at the top level of an integration —
+# has something to call. The real logic lives in ``diagnostics.py``.
+from .diagnostics import (
+    async_get_config_entry_diagnostics,
+    async_get_device_diagnostics,
+)
+
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "ship_anchor"

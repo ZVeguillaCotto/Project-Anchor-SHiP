@@ -489,6 +489,44 @@ share one code path and the C suite still proves the bytes match.
   interface, and that framing / SipHash / LEAT / burst / heartbeat /
   telemetry all run on pure Python with no binary present.
 
+### v0.1.22 — Home Assistant Device Diagnostics
+
+An engineer troubleshooting a physical test bench needs *one file* that says
+exactly what SHiP Anchor is doing inside their box: which engine is running,
+which bindings are baked in, which LEAT cheat-sheet rows are compiled, and
+which mesh branches are alive. v0.1.22 wires up Home Assistant's standard
+**"Download diagnostics"** button so that file is one click, and — the one
+rule — it is a *photo, not a key*: every cryptographic secret is redacted
+in place while the routing structure stays intact.
+
+### 3.7 The diagnostics bundle & its sanitization (v0.1.22)
+
+- **`diagnostics.py` is a new, self-contained module** exposing the two
+  Home Assistant entry points `async_get_config_entry_diagnostics` and
+  `async_get_device_diagnostics`. HA (2022.4+) auto-detects a function of
+   these names at the top level of an integration and shows the download
+  button for free — so `__init__.py` simply **re-exports** them; no separate
+   platform or registry entry is needed.
+- **The bundle is assembled in three reads, then one scrub:** (1) the engine
+   status card from `runtime.engine_summary()`; (2) the saved binding records
+   from `.storage/ship_anchor.bindings` (via the runtime's compiler) plus a
+   **LEAT** summary compiled with the *same* `build_leat_table` the wizard
+   uses, so the photo matches the table the hardware holds; (3) the
+    `diagnose_mesh` heartbeat verdict shared with the dashboard and the MCP
+   diagnostic. A `device` card is added on the device-level entry point.
+- **`redact_structure` is a pure, unit-tested sanitizer.** It walks the
+   assembled bundle and replaces the value of any key whose *name* names a
+   secret (`key`, `secret`, `hmac`, `nonce`, `token`, `password`) with
+    `***`, returning a `(sanitized_value, redacted_paths)` pair. Routing
+   structure — node IEEE identifiers, group ids, LEAT rows — is **preserved**,
+   because that is the debugging payload. The original dict is never mutated.
+- **`tests/test_diagnostics_unit.py` (Layer 1 + 2, 10 tests)** proves both
+   halves: completeness (every section present: engine, bindings, LEAT,
+   heartbeat, sanitization) and privacy (planted `key_hex` / `nonce` secrets
+   are `***` in the output while IEEE identifiers survive; the whole bundle is
+   JSON-serializable and contains no raw secret). An empty-runtime case proves
+   the bundle degrades gracefully.
+
 ---
 
 ## Part 4 — The Release Calendar (one-line timeline)
@@ -517,6 +555,7 @@ share one code path and the C suite still proves the bytes match.
 | v0.1.19 | 2026-10-25 | Remediation of audit findings A–G (branch isolation, diamond topo, clock-skew parity, IP SSRF guard). |
 | v0.1.20 | 2026-10-25 | Visual telemetry dashboard (status badges + modeled latency) + burst debounce (5 taps / 500 ms) + power-loss recovery drill. |
 | v0.1.21 | 2026-10-26 | Pure-Python runtime fallback: optional-native accelerator seam (`runtime.py`), `leat_match` in pure Python, manifest `requires_c_toolchain: false` — HACS/HAOS-safe, no `gcc`. |
+| v0.1.22 | 2026-10-26 | Home Assistant device diagnostics (`diagnostics.py`): "Download diagnostics" bundle of engine + bindings + LEAT + heartbeat, with secret redaction (keys/nonces → `***`, routing preserved). |
 
 ---
 
