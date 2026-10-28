@@ -39,7 +39,7 @@ import pytest
 
 import custom_components.ship_anchor.config_flow as config_flow
 from custom_components.ship_anchor.config_flow import (
-    ShipAnchorOptionsFlow,
+    ShipAnchorOptionsFlowHandler,
     _rule_actions_phrase,
     _rule_eli5,
     _rule_window_phrase,
@@ -78,7 +78,7 @@ def _base_entry_data() -> dict:
     }
 
 
-def _flow_with_entry(data: dict, with_compiler: bool = True) -> tuple[ShipAnchorOptionsFlow, object]:
+def _flow_with_entry(data: dict, with_compiler: bool = True) -> tuple[ShipAnchorOptionsFlowHandler, object]:
     fake_hass = _make_fake_hass()
     if with_compiler:
         from custom_components.ship_anchor.compiler import AnchorCompiler
@@ -86,7 +86,7 @@ def _flow_with_entry(data: dict, with_compiler: bool = True) -> tuple[ShipAnchor
             "compiler": AnchorCompiler(fake_hass, _make_fake_store(), stored_data={}),
         }
     entry = _entry(data)
-    flow = ShipAnchorOptionsFlow(entry)
+    flow = ShipAnchorOptionsFlowHandler(entry)
     flow.hass = fake_hass
     return flow, entry
 

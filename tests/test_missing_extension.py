@@ -46,7 +46,7 @@ from custom_components.ship_anchor.runtime import (
 )
 from custom_components.ship_anchor import ship_protocol
 from custom_components.ship_anchor.compiler import AnchorCompiler
-from custom_components.ship_anchor.config_flow import ShipAnchorOptionsFlow
+from custom_components.ship_anchor.config_flow import ShipAnchorOptionsFlowHandler
 from tests.conftest import _make_fake_hass, _make_fake_store
 
 
@@ -210,7 +210,7 @@ def test_runtime_setup_surfaces_engine_on_pure_python() -> None:
     }
     entry = SimpleNamespace(domain="ship_anchor", data=data, options={})
     hass = _make_fake_hass()
-    flow = ShipAnchorOptionsFlow(entry)
+    flow = ShipAnchorOptionsFlowHandler(entry)
     flow.hass = hass
     rendered = flow._render_dashboard(data)
     assert "Live mesh telemetry" in rendered

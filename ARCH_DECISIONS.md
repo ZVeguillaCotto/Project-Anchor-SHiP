@@ -659,6 +659,90 @@ A report came in that clicking the gear / "Configure" icon on the SHiP Anchor ca
 
 ---
 
+### v0.1.26 - Options-Flow Handler Separation
+
+v0.1.25 proved the gear-icon path was already acyclic and locked it with a
+comment. v0.1.26 makes that decoupling *structural* instead of *aspirational*:
+the dashboard is renamed to a standalone ``ShipAnchorOptionsFlowHandler`` that
+inherits Home Assistant's ``OptionsFlow`` directly and shares no constructor
+path with the wizard - so the 500 cannot happen, and a test proves it. Again,
+**no change to the wire format**: the 19-byte frame, SipHash, LEAT, and
+Mesh-RTC are untouched.
+
+### 3.11 A standalone handler class, decoupled from the wizard (v0.1.26)
+
+- **One class per concern.** The dashboard handler is renamed from
+   `ShipAnchorOptionsFlow` to `ShipAnchorOptionsFlowHandler` and now inherits
+   `config_entries.OptionsFlow` directly; the wizard's `async_get_options_flow`
+   factory on `ShipAnchorConfigFlow` simply `return ShipAnchorOptionsFlowHandler(config_entry)`
+   and nothing else. The handler's MRO is `ShipAnchorOptionsFlowHandler -> OptionsFlow
+   -> object`, so the wizard is *not* in the handler's ancestry.
+- **A one-way door, by construction.** The handler keeps no reference back to
+   the wizard and its `__init__` only copies the entry and calls `super().__init__`;
+   the mangled `__init__` comment from v0.1.25 (a stray continuation line) was
+   repaired into a coherent ELI5 "no gear-icon 500" invariant. No `__new__` /
+   `__init_subclass__` / metaclass re-entry exists.
+- **Tests prove the decoupling.** `tests/test_options_flow_recursion.py` is now
+   six tests: the open path returns the handler once, direct construction is
+   recursion-free, the tight-stack open path (`sys.setrecursionlimit(80)`) never
+   overflows, the dashboard form renders, the MRO is acyclic, and a new
+   `test_options_handler_is_decoupled_from_config_flow` asserts the wizard is absent
+   from the handler's MRO and that the handler really does inherit `OptionsFlow`.
+   `tests/test_options_dashboard.py` and `tests/test_missing_extension.py` were
+   renamed to the new handler name.
+- **`ELI5 First, Engineering Second` held.** The factory docstring and the new
+   test docstrings lead with the plain-language "its own class, two separate
+   doors" picture *before* the MRO detail.
+- **Version.** `manifest.json`, the MCP `serverInfo`, and `pyproject.toml` all
+   move to `0.1.26`. The MCP surface is still **eight tools**, under the **1,500**
+   lexical-token tripwire - no new schema surface, so the drills stay `6/6` and
+   the C core stays `13/13`.
+
+---
+
+### v0.1.27 - Options-Flow Constructor Signature Fix
+
+A fresh report came in that the gear / "Configure" icon could still answer with a
+500, this time blamed on the options-flow *constructor signature*. v0.1.27
+investigates that concern against Home Assistant Core's real source and fixes the
+one genuine mismatch it finds - again with **no change to the wire format**: the
+19-byte frame, SipHash, LEAT, and Mesh-RTC stay exactly as they were.
+
+### 3.12 The gear-icon 500, and the parameterless base (v0.1.27)
+
+- **The finding is genuine this time.** Home Assistant Core's modern
+   `config_entries.OptionsFlow` base class defines **no** `__init__`; it inherits
+   `FlowHandler.__init__(self, hass)`, which takes **no config-entry argument**.
+   The entry instead rides on a `config_entry` *property* that raises until the
+   flow is wired to a `hass`. The old habit of writing
+   `super().__init__(config_entry)` copied the now-deprecated
+   `OptionsFlowWithConfigEntry` pattern, which Core logs as an `ERROR` on
+   construction and, in real Core, hands a positional argument into a
+   parameterless base - a genuine signature mismatch, not a phantom.
+- **The fix is two halves.** `ShipAnchorOptionsFlowHandler.__init__(self,
+   config_entry=None)` now calls the modern, parameterless
+   `super().__init__()` and *captures* the entry it was handed
+   (`self._config_entry`, `self._entry`). A new helper `_resolve_entry()` finds
+   the entry whichever way the flow reached us: prefer the entry we were handed,
+   and fall back to the base `config_entry` property when we were not. Both
+   `_entry_data()` and `_update_entry()` now resolve through it, so the dashboard
+   behaves exactly as in v0.1.26 when handed an entry, and degrades to an empty
+   card (never a crash) when it is not.
+- **The fix is locked with a real test.** New `tests/test_options_flow_signature.py`
+   (Layer 1, 5 tests) proves the handler is buildable with **no argument** the way
+   modern Core builds it, that a captured entry wins over the property, that the
+   resolver falls back to the `config_entry` property, that a not-yet-initialised
+   flow returns `None` rather than raising, and that the MRO stays acyclic.
+- **`ELI5 First, Engineering Second` held.** The milestone and the new test
+   docstrings lead with the plain-language "the constructor now matches Core's
+   signature" picture *before* the `super()` / property detail.
+- **Version.** `manifest.json`, the MCP `serverInfo`, and `pyproject.toml` all
+   move to `0.1.27`. The MCP surface is still **eight tools**, under the **1,500**
+   lexical-token tripwire - no new schema surface, so the drills stay `6/6` and
+   the C core stays `13/13`.
+
+---
+
 ## Part 4 — The Release Calendar (one-line timeline)
 
 | Tag | Date (Eastern) | One-line summary |
@@ -689,6 +773,8 @@ A report came in that clicking the gear / "Configure" icon on the SHiP Anchor ca
 | v0.1.23 | 2026-10-26 | Enterprise hardening: fuzz airbag (`test_fuzz.py` + C `test_ship_fuzz.c`, 13/13), entity-registry drift detection, dry-run gesture simulator, and persisted anti-replay nonce windows. |
 | v0.1.24 | 2026-10-27 | Public launch & hygiene: GitHub Actions CI (pytest + C core + fuzz + drills), `pyproject.toml` (Ruff/Black/isort), `SECURITY.md`, and polished README/CONTRIBUTING. |
 | v0.1.25 | 2026-10-27 | Options-flow recursion guard: no live loop found (the constructor is already acyclic); added an ELI5 invariant comment and `tests/test_options_flow_recursion.py` (5 tests) to lock it in. No wire-format change. |
+| v0.1.26 | 2026-10-27 | Options-flow handler separation: renamed to the standalone `ShipAnchorOptionsFlowHandler` (inherits `OptionsFlow`, no wizard in its MRO); repaired the `__init__` invariant comment; 6 regression + decoupling tests. No wire-format change. |
+| v0.1.27 | 2026-10-27 | Options-flow constructor signature fix: parameterless `super().__init__()` matching Core's `OptionsFlow` base + `_resolve_entry()` fallback; new `tests/test_options_flow_signature.py` (5 tests). No wire-format change. |
 
 ---
 

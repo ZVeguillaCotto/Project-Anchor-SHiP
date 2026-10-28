@@ -985,11 +985,16 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         and offers add-rule / delete-rule / delete-binding / erase-all /
         recompile actions — all from inside Home Assistant's options
         dialog, with no Developer-Tools or log reading required.
+        v0.1.26 — decoupled into a standalone
+        ``ShipAnchorOptionsFlowHandler`` that inherits ``OptionsFlow``
+        directly and shares no state with this wizard; the factory
+        returns it and the two classes stay one-way apart, so the gear
+        icon can never loop the stack.
         """
-        return ShipAnchorOptionsFlow(config_entry)
+        return ShipAnchorOptionsFlowHandler(config_entry)
 
 
-class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
+class ShipAnchorOptionsFlowHandler(config_entries.OptionsFlow):
     """
     ELI5: the **Visual LEAT & Multi-Hop Inspector Dashboard**.
 
@@ -1016,26 +1021,46 @@ class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
       • **Recompile** — re-run the wizard to re-apply the binding.
     """
 
-    def __init__(self, config_entry: Any) -> None:
-        super().__init__(config_entry)
-         # ELI5 (v0.1.25): the "no gear-icon 500" invariant. This constructor
-         # must ONLY copy the entry onto itself and call the parent — it must
-         # never call ``async_get_options_flow`` (or any ``async_step_*``) on
-         # the way back in. Home Assistant opens the dialog by calling
-         # ``async_get_options_flow`` -> ``ShipAnchorOptionsFlow(entry)``; if
-         # ``__init__`` (or a subclass ``__init_subclass__`` / ``__new__``)
-         # ever re-entered that path, clicking the gear icon would loop the
-         # stack until it overflowed. The one-and-only caller of
-         # ``async_get_options_flow`` is Home Assistant itself, so this class
-         # keeps no reference to it. Locked in by
-         # tests/test_options_flow_recursion.py.
-        # Home Assistant (and by the test stub) before the first step runs.
+    def __init__(self, config_entry: Any = None) -> None:
+        super().__init__()
+              # ELI5 (v0.1.27): the "no gear-icon 500" + signature
+              # invariant. Home Assistant Core's modern ``OptionsFlow``
+              # constructor takes NO argument, so we call the parent the
+              # modern, parameterless way -- ``super().__init__()``. The
+              # old habit, ``super().__init__(config_entry)``, copied the
+              # deprecated ``OptionsFlowWithConfigEntry`` (now "phased
+              # out ... kept only for backward compatibility" and logged
+              # as a Core ERROR); in real HA Core it also hands the entry
+              # positionally into a parameterless base and corrupts the
+              # flow. So we *capture* the entry we were handed and resolve
+              # it lazily via ``self.config_entry`` when we were not (see
+              # ``_resolve_entry``). This handler also never calls
+              # ``async_get_options_flow`` (or any ``async_step_*``) on the
+              # way in, so the gear icon can neither loop the stack nor
+              # mismatch the constructor. Locked in by
+              # tests/test_options_flow_recursion.py.
         self._config_entry = config_entry
         self._entry = config_entry
 
-    # ------------------------------------------------------------------
-    # Persistence helpers
-    # ------------------------------------------------------------------
+    def _resolve_entry(self) -> Any:
+        """ELI5 (v0.1.27): find the config entry this dashboard is
+        about, whichever way it reached us.
+
+        The wizard factory hands the entry in by name (so the
+        dashboard behaves exactly as it did in v0.1.26); but in
+        modern Home Assistant Core the base ``OptionsFlow``
+        constructor takes no argument, so a flow built the
+        HA-native way carries its entry only as the
+        ``config_entry`` property. We prefer the entry we
+        were handed and fall back to that property when not.
+        """
+        if self._config_entry is not None:
+            return self._config_entry
+        try:
+            return self.config_entry
+        except Exception:  # pragma: no cover - HA-only fallback
+            return None
+
     def _compiler(self) -> Any:
         """Fetch the shared compiler, or None if the integration isn't
         fully set up yet."""
@@ -1052,13 +1077,14 @@ class ShipAnchorOptionsFlow(config_entries.OptionsFlow):
         ``hass.config_entries.async_update_entry`` at the end of each
         action. A fresh entry (no data yet) returns an empty dict.
         """
-        data = getattr(self._entry, "data", None) or {}
+        data = getattr(self._resolve_entry(), "data", None) or {}
         return dict(data) if isinstance(data, dict) else {}
 
     async def _update_entry(self, data: dict) -> Any:
         """ELI5: persist a new data dict onto the config entry."""
-        await self.hass.config_entries.async_update_entry(self._entry, data=data)
-        return self._entry
+        entry = self._resolve_entry()
+        await self.hass.config_entries.async_update_entry(entry, data=data)
+        return entry
 
     # ------------------------------------------------------------------
     # Dashboard rendering (pure — no I/O, fully unit-testable)
@@ -1726,4 +1752,4 @@ def render_simulation(sim: dict, data: dict) -> str:
     lines.append("{}    **{}**".format(sim["badge"], sim["verdict"]))
     return "\n".join(lines)
 
-__all__ = ["ShipAnchorConfigFlow", "ShipAnchorOptionsFlow"]
+__all__ = ["ShipAnchorConfigFlow", "ShipAnchorOptionsFlowHandler"]

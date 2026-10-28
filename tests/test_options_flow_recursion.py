@@ -25,7 +25,7 @@ LAYER 2 - THE UNDER-THE-HOOD IMPLEMENTATION
 - A fake ``config_entry`` is a plain object with a ``data`` dict (see the
   companion ``tests/test_options_dashboard.py`` for the fuller dashboard suite).
 - The open path is exercised end-to-end: ``async_get_options_flow`` ->
-   ``ShipAnchorOptionsFlow(entry)`` -> ``async_step_init(None)`` (the exact
+   ``ShipAnchorOptionsFlowHandler(entry)`` -> ``async_step_init(None)`` (the exact
   sequence Home Assistant runs when the dialog opens).
 - A low ``sys.setrecursionlimit`` test makes any *future* re-entrancy blow up
   the instant it happens, instead of silently growing the stack to a 500.
@@ -41,7 +41,7 @@ from types import SimpleNamespace
 
 from custom_components.ship_anchor.config_flow import (
     ShipAnchorConfigFlow,
-    ShipAnchorOptionsFlow,
+    ShipAnchorOptionsFlowHandler,
 )
 
 
@@ -82,7 +82,7 @@ def test_async_get_options_flow_returns_flow_once():
     the stack -- so a clean return *is* the proof the loop is gone.
     """
     flow = ShipAnchorConfigFlow.async_get_options_flow(_entry())
-    assert isinstance(flow, ShipAnchorOptionsFlow)
+    assert isinstance(flow, ShipAnchorOptionsFlowHandler)
     # ELI5: the entry is held on the flow so the dashboard can read + write it.
     assert flow._config_entry is flow._entry
     assert flow._config_entry.data["source_name"] == "Hall Switch"
@@ -91,8 +91,8 @@ def test_async_get_options_flow_returns_flow_once():
 def test_direct_construction_is_also_recursion_free():
     """ELI5: building the dashboard by hand (as the test stub does) is just as
     safe -- the constructor only copies the entry and calls the parent."""
-    flow = ShipAnchorOptionsFlow(_entry())
-    assert isinstance(flow, ShipAnchorOptionsFlow)
+    flow = ShipAnchorOptionsFlowHandler(_entry())
+    assert isinstance(flow, ShipAnchorOptionsFlowHandler)
     assert flow.hass is None   # injected by HA (or the stub) before step 1
 
 
@@ -139,8 +139,31 @@ def test_options_flow_mro_is_acyclic():
     if the class hierarchy had a loop, ``type(...)`` would have raised at
     import time. We re-assert it here so the guarantee is explicit, not
     accidental."""
-    mro = ShipAnchorOptionsFlow.__mro__
+    mro = ShipAnchorOptionsFlowHandler.__mro__
     # Every step is a *different* class -- no class can appear twice.
     assert len(mro) == len(set(mro))
     # The very last class is always the root ``object``.
     assert mro[-1] is object
+
+# ---------------------------------------------------------------------------
+# LAYER 2 - the handler is decoupled from the wizard
+# ---------------------------------------------------------------------------
+def test_options_handler_is_decoupled_from_config_flow():
+    """ELI5 (v0.1.26): the gear-icon dashboard lives in its *own* class.
+
+    The whole point of the refactor is that the dashboard handler and the
+    wizard are *two separate classes* that share no constructor path. The
+    handler inherits straight from Home Assistant's ``OptionsFlow`` and
+    knows nothing about ``ShipAnchorConfigFlow`` -- so opening the dialog
+    can never wander back into the wizard and loop the stack.
+    """
+    names = [c.__name__ for c in ShipAnchorOptionsFlowHandler.__mro__]
+    # The wizard is not anywhere in the handler's ancestry.
+    assert "ShipAnchorConfigFlow" not in names
+    assert not issubclass(
+        ShipAnchorOptionsFlowHandler, ShipAnchorConfigFlow
+    )
+    # ...and it really does inherit the options-flow base directly.
+    import homeassistant.config_entries as ce
+    assert issubclass(ShipAnchorOptionsFlowHandler, ce.OptionsFlow)
+    assert "OptionsFlow" in names
