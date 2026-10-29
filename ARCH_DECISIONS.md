@@ -741,6 +741,52 @@ one genuine mismatch it finds - again with **no change to the wire format**: the
    lexical-token tripwire - no new schema surface, so the drills stay `6/6` and
    the C core stays `13/13`.
 
+### v0.1.28 - Options-Flow Dashboard Step Handler Fix
+
+A fresh report came in that the gear / "Configure" icon still answered with a 500,
+this time with the exact Core message
+**"Handler ShipAnchorOptionsFlowHandler doesn't support step dashboard"**.
+v0.1.28 investigates that concern against Home Assistant Core's real source and
+fixes the one genuine mismatch it finds - again with **no change to the wire
+format**: the 19-byte frame, SipHash, LEAT, and Mesh-RTC stay exactly as they
+were.
+
+### 3.13 The gear-icon 500, and why a card needs a matching step (v0.1.28)
+
+- **The finding is genuine this time, and it is a different 500 than v0.1.25 /
+   v0.1.26 / v0.1.27.** Those three were about *construction* (an acyclic
+   MRO, a parameterless `super()`). This one is about *re-dispatch*. When you
+   open a card, Home Assistant Core remembers the card's `step_id` and, when the
+   user submits it, Core re-dispatches that form to a method named after the
+   card. The Visual LEAT & Multi-Hop dashboard was *rendered from inside*
+    `async_step_init` with `step_id="dashboard"`, but there was **no**
+    `async_step_dashboard` method. So the *first* paint worked (Core starts at
+    `async_step_init`), but the moment the user submitted, Core ran
+    `_raise_if_step_does_not_exist(flow, "dashboard")` → `UnknownStep` → a 500
+    on the gear icon.
+- **The fix makes "dashboard" a real step.** The dashboard body is renamed to its
+   own `async_step_dashboard(self, user_input=None)` method (the matching handler
+   Core looks for), and `async_step_init` becomes a **thin door** that hands the
+   request straight over: `return await self.async_step_dashboard(user_input)`.
+   The four internal "return to the dashboard" navigations (add-rule,
+    delete-rule, delete-binding, re-handshake) are repointed to
+    `async_step_dashboard` too, so nothing loops back through the door. The card
+   the user sees is **unchanged** — same dropdown, same plain-English wording.
+- **The fix is locked with a real test.** New
+    `tests/test_options_flow_dashboard_step.py` (Layer 1 + 2, 4 tests) proves the
+   matching handler exists, that the rendered card's `step_id` always has a
+   matching `async_step_<id>` on the *same class* (the exact invariant Core's
+    `_raise_if_step_does_not_exist` checks), and that the dashboard belongs to the
+   options-flow handler, **not** the wizard (the two handlers stay decoupled).
+- **`ELI5 First, Engineering Second` held.** The milestone, the new test
+   docstrings, and the delegator's docstring lead with the plain-language "a card
+   needs a matching handler, just like a room needs a matching door" picture
+   *before* the `step_id` / `async_step_` detail.
+- **Version.** `manifest.json`, the MCP `serverInfo`, and `pyproject.toml` all
+   move to `0.1.28`. The MCP surface is still **eight tools**, under the **1,500**
+   lexical-token tripwire - no new schema surface, so the drills stay `6/6` and
+   the C core stays `13/13`.
+
 ---
 
 ## Part 4 — The Release Calendar (one-line timeline)
@@ -775,6 +821,7 @@ one genuine mismatch it finds - again with **no change to the wire format**: the
 | v0.1.25 | 2026-10-27 | Options-flow recursion guard: no live loop found (the constructor is already acyclic); added an ELI5 invariant comment and `tests/test_options_flow_recursion.py` (5 tests) to lock it in. No wire-format change. |
 | v0.1.26 | 2026-10-27 | Options-flow handler separation: renamed to the standalone `ShipAnchorOptionsFlowHandler` (inherits `OptionsFlow`, no wizard in its MRO); repaired the `__init__` invariant comment; 6 regression + decoupling tests. No wire-format change. |
 | v0.1.27 | 2026-10-27 | Options-flow constructor signature fix: parameterless `super().__init__()` matching Core's `OptionsFlow` base + `_resolve_entry()` fallback; new `tests/test_options_flow_signature.py` (5 tests). No wire-format change. |
+| v0.1.28 | 2026-10-27 | Options-flow dashboard step handler: the dashboard card is now a real `async_step_dashboard` step with a matching handler (the "gear icon 500: doesn't support step dashboard" fix); `async_step_init` is a thin door; new `tests/test_options_flow_dashboard_step.py` (4 tests). No wire-format change. |
 
 ---
 

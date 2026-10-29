@@ -1243,6 +1243,23 @@ class ShipAnchorOptionsFlowHandler(config_entries.OptionsFlow):
     # Step: dashboard (init)
     # ------------------------------------------------------------------
     async def async_step_init(self, user_input: dict | None = None):
+        """ELI5 (v0.1.28): the "gear icon" door -- and the fix for the
+        "does not support step dashboard" 500.
+        Home Assistant Core opens an options flow by calling
+        ``async_step_init``. The home step of this dashboard is the
+        Visual LEAT & Multi-Hop Inspector, so this method is now just a
+        thin door that hands the request straight to
+        ``async_step_dashboard`` -- which exists as its OWN method, so
+        the form's ``step_id`` ("dashboard") always has a matching
+        ``async_step_dashboard`` to receive the user's submit. The old
+        code showed that dashboard form from *inside* ``async_step_init``;
+        when the user then submitted it, Core re-dispatched to
+        ``async_step_dashboard`` and -- finding none -- raised
+        "Handler ... does not support step dashboard" (a 500 on the gear
+        icon). The card the user sees is unchanged.
+        """
+        return await self.async_step_dashboard(user_input)
+    async def async_step_dashboard(self, user_input: dict | None = None):
         """ELI5: the dashboard step — show the current state and actions.
 
         ``user_input`` is ``None`` when the dialog is opened (no action
@@ -1291,7 +1308,7 @@ class ShipAnchorOptionsFlowHandler(config_entries.OptionsFlow):
                 new_data["heartbeats"] = healed
                 new_data["heartbeat_now_ms"] = now_ms
                 await self._update_entry(new_data)
-                return await self.async_step_init(None)
+                return await self.async_step_dashboard(None)
             elif action == "simulate":
                   # ELI5 (v0.1.23 - Pillar 3): a non-engineer clicks "Simulate"
                   # a gesture and instantly sees a dry-run trace, the modeled
@@ -1427,7 +1444,7 @@ class ShipAnchorOptionsFlowHandler(config_entries.OptionsFlow):
                 new_data = dict(data)
                 new_data["rules"] = new_rules
                 await self._update_entry(new_data)
-                return await self.async_step_init(None)
+                return await self.async_step_dashboard(None)
 
         return self.async_show_form(
             step_id="add_rule",
@@ -1458,7 +1475,7 @@ class ShipAnchorOptionsFlowHandler(config_entries.OptionsFlow):
                     new_data = dict(data)
                     new_data["rules"] = new_rules
                     await self._update_entry(new_data)
-                    return await self.async_step_init(None)
+                    return await self.async_step_dashboard(None)
                 errors["base"] = "rule_index_out_of_range"
         options = []
         for i, rule in enumerate(rules):
@@ -1506,7 +1523,7 @@ class ShipAnchorOptionsFlowHandler(config_entries.OptionsFlow):
                     new_data = dict(data)
                     new_data["sources"] = new_sources
                     await self._update_entry(new_data)
-                    return await self.async_step_init(None)
+                    return await self.async_step_dashboard(None)
                 errors["base"] = "source_index_out_of_range"
         options = []
         for i, src in enumerate(sources):
