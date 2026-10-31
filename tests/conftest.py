@@ -156,6 +156,67 @@ def _install_homeassistant() -> None:
     selector.NumberSelector = NumberSelector
     selector.NumberSelectorConfig = NumberSelectorConfig
 
+    class DeviceSelector(_SelectorBase):
+        """ELI5 (v0.1.30): a native Home Assistant *device* picker
+        (the friendly, IEEE-free device browser). Kept in the stub for
+        import parity with real HA Core; the interactive wizard still
+        drives device selection through a *protocol-filtered*
+        ``SelectSelector`` so a cross-bus pairing can never slip
+        through (see ``_candidates_for_side`` / ``async_step_manual``)."""
+        pass
+
+    class EntitySelector(_SelectorBase):
+        """ELI5 (v0.1.30): a native *entity* picker, defaulting to the
+        ``automation`` domain so an existing Home Assistant automation can
+        be adopted as a source without retyping a trigger/action."""
+        pass
+
+    class TargetSelector(_SelectorBase):
+        """ELI5 (v0.1.30): a native *target* picker -- the area / device
+        / entity target of a service call -- so a binding can point at a
+        target from the browser instead of a raw target dict."""
+        pass
+
+    class DeviceSelectorConfig:
+        def __init__(self, **kwargs: Any) -> None:
+            self.multiple = kwargs.get("multiple", False)
+            self.description = kwargs.get("description")
+            self.entity = kwargs.get("entity")
+
+    class EntitySelectorConfig:
+        def __init__(self, **kwargs: Any) -> None:
+            self.domain = kwargs.get("domain")
+            self.multiple = kwargs.get("multiple", False)
+            self.description = kwargs.get("description")
+
+    class TargetSelectorConfig:
+        def __init__(self, **kwargs: Any) -> None:
+            self.multiple = kwargs.get("multiple", False)
+            self.description = kwargs.get("description")
+            self.entity = kwargs.get("entity")
+            self.device = kwargs.get("device")
+
+    class TextSelector(_SelectorBase):
+        """ELI5 (v0.1.30): a plain single-line text field. Used by the
+        advanced manual picker for the optional group name so a user can
+        type a label instead of building a raw target dict."""
+        pass
+
+    class TextSelectorConfig:
+        def __init__(self, **kwargs: Any) -> None:
+            self.description = kwargs.get("description")
+            self.placeholder = kwargs.get("placeholder")
+
+    selector.DeviceSelector = DeviceSelector
+    selector.DeviceSelectorConfig = DeviceSelectorConfig
+    selector.EntitySelector = EntitySelector
+    selector.EntitySelectorConfig = EntitySelectorConfig
+    selector.TargetSelector = TargetSelector
+    selector.TargetSelectorConfig = TargetSelectorConfig
+    selector.TextSelector = TextSelector
+    selector.TextSelectorConfig = TextSelectorConfig
+
+
     # homeassistant.config_entries
     config_entries = _module("homeassistant.config_entries")
 

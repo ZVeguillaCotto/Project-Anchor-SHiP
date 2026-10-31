@@ -3,7 +3,20 @@
       "step": {
          "user": {
             "title": "SHiP Anchor — Step 1 of 5: Direction",
-            "description": "SHiP Anchor now lets you start from EITHER end. Pick the device you already know about — the thing you want to CONTROL (a light, fan, valve, lock), or the switch/button you want to USE. The wizard then walks you to the other end and (optionally) through an intermediate canopy module."
+            "description": "SHiP Anchor now lets you start from EITHER end. Pick the device you already know about — the thing you want to CONTROL (a light, fan, valve, lock), or the switch/button you want to USE. The wizard then walks you to the other end and (optionally) through an intermediate canopy module.",
+             "data": {
+                 "direction": "Which end to start from: target-first (a device to control), source-first (a switch/button to use), or advanced (pick by name from Home Assistant's native browser — no IEEE addresses, no YAML)."
+             }
+         },
+         "manual": {
+             "title": "SHiP Anchor — Advanced: Manual Device / Entity Picker",
+             "description": "For advanced users: pick your SOURCE device (or an existing automation) by name from Home Assistant's native browser instead of a dropdown. After you choose, SHiP Anchor still filters the TARGET by protocol, so a cross-bus pairing can never slip through.",
+             "data": {
+                 "manual_source_device_id": "Source device — pick by name from your device registry (no IEEE address needed).",
+                 "manual_source_entity_id": "Or: an existing automation / entity to adopt as the source.",
+                 "use_group": "Use a group (recommended for 3+ targets)",
+                 "group_name": "Group name (optional)"
+             }
          },
          "source": {
             "title": "SHiP Anchor — Step 2 of 5: Source",

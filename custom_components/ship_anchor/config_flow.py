@@ -55,6 +55,14 @@ from homeassistant.helpers.selector import (
     SelectSelectorMode,
     NumberSelector,
     NumberSelectorConfig,
+    DeviceSelector,
+    DeviceSelectorConfig,
+    EntitySelector,
+    EntitySelectorConfig,
+    TargetSelector,
+    TargetSelectorConfig,
+    TextSelector,
+    TextSelectorConfig,
 )
 
 from . import DOMAIN
@@ -343,7 +351,7 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             direction = str(user_input.get("direction", "") or "").strip()
-            if direction not in ("source", "target"):
+            if direction not in ("source", "target", "advanced"):
                 errors["base"] = "direction_required"
                 user_input = None
         if user_input is None:
@@ -356,6 +364,7 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                                 options=[
                                     {"value": "target", "label": "I want to control a device (target-first)"},
                                     {"value": "source", "label": "I have a switch / button (source-first)"},
+                                     {"value": "advanced", "label": "Advanced: pick a source or target manually (native device / entity / target browser)"},
                                 ],
                                 mode=SelectSelectorMode.DROPDOWN,
                             )
@@ -367,8 +376,100 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._input = {"direction": direction}  # type: ignore[attr-defined]
         if direction == "source":
             return await self.async_step_anchor("source")
+        if direction == "advanced":
+            # ELI5 (v0.1.30): the advanced route opens the native-selector
+            # manual picker, then funnels into the *same* protocol-filtered
+            # target step so the cross-bus guard is never bypassed.
+            return await self.async_step_manual(None)
         return await self.async_step_anchor("target")
 
+
+    # --------------------------------------------------------------------
+    # v0.1.30 — Advanced manual picker (native selectors)
+    # ELI5: an opt-in route for users who prefer Home Assistant's native
+    # device / entity / target browsers instead of the protocol-filtered
+    # dropdown. It funnels into async_step_anchor('target') so the
+    # cross-bus safety guard is never bypassed.
+    # --------------------------------------------------------------------
+    def _manual_schema(self) -> vol.Schema:
+        """ELI5: the advanced picker form — native HA selectors."""
+        return vol.Schema(
+              {
+                  vol.Optional(
+                      "manual_source_device_id"
+                   ): DeviceSelector(DeviceSelectorConfig(multiple=False)),
+                  vol.Optional(
+                      "manual_source_entity_id"
+                   ): EntitySelector(EntitySelectorConfig(domain="automation")),
+                  vol.Optional("use_group", default=False): bool,
+                  vol.Optional("group_name", default=""): TextSelector(
+                      TextSelectorConfig()),
+               },
+        )
+
+    async def async_step_manual(self, user_input: dict | None = None):
+        """ELI5: build a source entry from a native selector choice."""
+        if user_input is None:
+             return self.async_show_form(
+                 step_id="manual",
+                 data_schema=self._manual_schema(),
+                 errors={},
+             )
+        if user_input is not None:
+            if self._input is None:
+                self._input = {}      # type: ignore[attr-defined]
+            device_reg = dr.async_get(self.hass)
+            entity_reg = er.async_get(self.hass)
+            device_id = str(user_input.get("manual_source_device_id") or "").strip()
+            entry: dict[str, Any] | None = None
+            if device_id:
+                dev = device_reg.async_get(device_id)
+                if dev is not None:
+                    identifiers: list[list[str]] = []
+                    for namespace, value in (dev.identifiers or ()):
+                        identifiers.append([str(namespace), str(value)])
+                    entry = {
+                           "device_id": device_id,
+                           "name": _device_name(dev),
+                           "ieee": _device_ieee(dev),
+                           "model": _device_model(dev),
+                           "manufacturer": _device_manufacturer(dev),
+                           "identifiers": identifiers,
+                       }
+            else:
+                entity_id = str(user_input.get("manual_source_entity_id") or "").strip()
+                if entity_id:
+                    ent = entity_reg.async_get(entity_id)
+                    if ent is not None and ent.device_id:
+                        dev = device_reg.async_get(ent.device_id)
+                        if dev is not None:
+                            identifiers = []
+                            for namespace, value in (dev.identifiers or ()):
+                                identifiers.append([str(namespace), str(value)])
+                            entry = {
+                                   "device_id": str(ent.device_id),
+                                   "name": _device_name(dev),
+                                   "ieee": _device_ieee(dev),
+                                   "model": _device_model(dev),
+                                   "manufacturer": _device_manufacturer(dev),
+                                   "identifiers": identifiers,
+                               }
+            if entry is None:
+                errors: dict[str, str] = {"base": "source_required"}
+                return self.async_show_form(
+                    step_id="manual",
+                    data_schema=self._manual_schema(),
+                    errors=errors,
+                   )
+            self._input["sources"] = [entry]      # type: ignore[union-attr]
+            # ELI5 (v0.1.30): record the picked device's protocol as the wizard's
+            # anchor so the next step — the (filtered) target picker — can exclude
+            # cross-bus targets, exactly like the wizard's own source step does.
+            self._input["protocol"] = _infer_protocol(
+                 device_reg.async_get(device_id)
+                 if device_id else device_reg.async_get(str(entry["device_id"]))
+            ).name    # type: ignore[union-attr]
+        return await self.async_step_anchor("target")
     # ------------------------------------------------------------------
     # Step 2 — anchor the FIRST device (bidirectional)
     # ELI5: whether the user chose "source-first" or "target-first", this

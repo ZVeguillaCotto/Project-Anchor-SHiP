@@ -76,6 +76,12 @@ class FakeEntityRegistry:
     def __init__(self, entities):
         self.entities = entities
 
+    def async_get(self, entity_id):
+          # ELI5 (v0.1.30): the advanced manual picker resolves an entity (e.g. an
+          # existing automation) back to its owning device, so the registry needs
+          # to look up entities the way the real HA entity registry does.
+        return self.entities.get(entity_id)
+
 
 def _device(id, model, manufacturer="", identifiers=()):
     return SimpleNamespace(
@@ -382,3 +388,72 @@ def test_erase_all_clears_store_even_with_bad_bindings() -> None:
     assert compiler._stored_data["bindings"] == []
     assert store.saved is not None
     assert store.saved["bindings"] == []
+
+
+
+
+# ---------------------------------------------------------------------------
+# 4 — v0.1.30 native-selector advanced manual route
+# ---------------------------------------------------------------------------
+def _manual_option_values(form: dict, key: str = "targets") -> set:
+    """ELI5: pull the dropdown values out of a picker form by its key."""
+    schema = form["data_schema"]._schema
+    sel = next(k for k in schema if k.key == key)
+    return {opt["value"] for opt in schema[sel].config.options}
+
+
+def test_advanced_direction_routes_to_manual_picker(patched_registries) -> None:
+    # ELI5 (v0.1.30): a third "advanced" option on the entry step opens the
+    # native-selector manual picker instead of the protocol-filtered wizard.
+    flow = config_flow.ShipAnchorConfigFlow()
+    flow.hass = _make_fake_hass()
+
+    form = _run(flow.async_step_user({"direction": "advanced"}))
+    assert form["step_id"] == "manual"
+
+
+def test_advanced_manual_device_builds_source_and_filters_targets(
+    patched_registries
+) -> None:
+    # ELI5: picking a device by its *device_id* in the manual step builds the
+    # same source entry the wizard does, then funnels into the protocol-
+    # filtered TARGET picker — so a cross-bus pairing can never slip through.
+    flow = config_flow.ShipAnchorConfigFlow()
+    flow.hass = _make_fake_hass()
+
+    # ELI5: the manual step opens with a native device/entity picker.
+    form = _run(flow.async_step_manual(None))
+    assert form["step_id"] == "manual"
+
+    # ELI5: name the Zigbee switch by device_id → the source is recorded and
+    # the wizard walks to the (protocol-filtered) target picker.
+    form = _run(flow.async_step_manual({"manual_source_device_id": "sw_a"}))
+    assert form["step_id"] == "target"
+    assert flow._input["sources"][0]["device_id"] == "sw_a"
+
+    # ELI5: the Z-Wave lock is filtered out because the source is Zigbee.
+    values = _manual_option_values(form)
+    assert "light1" in values
+    assert "zw_lock" not in values
+
+
+def test_advanced_manual_entity_resolves_device(patched_registries) -> None:
+    # ELI5: an entity picker (e.g. an existing automation) is resolved back to
+    # its owning device, and the device — not the entity — becomes the source.
+    flow = config_flow.ShipAnchorConfigFlow()
+    flow.hass = _make_fake_hass()
+
+    form = _run(flow.async_step_manual({"manual_source_entity_id": "e_sw_b"}))
+    assert form["step_id"] == "target"
+    assert flow._input["sources"][0]["device_id"] == "sw_b"
+
+
+def test_advanced_manual_empty_input_shows_errors(patched_registries) -> None:
+    # ELI5: submitting the manual step with no device or entity is a clean,
+    # self-correcting error — the form is re-shown, not a crash.
+    flow = config_flow.ShipAnchorConfigFlow()
+    flow.hass = _make_fake_hass()
+
+    form = _run(flow.async_step_manual({}))
+    assert form["step_id"] == "manual"
+    assert form["errors"].get("base") == "source_required"

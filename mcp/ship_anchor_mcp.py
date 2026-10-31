@@ -435,7 +435,7 @@ async def _dispatch(request: dict) -> Optional[dict]:
             "result": {
                 "protocolVersion": params.get("protocolVersion", "2024-11-05"),
                 "capabilities": {"tools": {}},
-                      "serverInfo": {"name": "ship-anchor", "version": "0.1.28"},
+                      "serverInfo": {"name": "ship-anchor", "version": "0.1.30"},
             },
         }
     if method == "ping":

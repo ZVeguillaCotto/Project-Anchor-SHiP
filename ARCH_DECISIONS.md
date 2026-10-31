@@ -787,6 +787,59 @@ were.
    lexical-token tripwire - no new schema surface, so the drills stay `6/6` and
    the C core stays `13/13`.
 
+### v0.1.30 - Native UI Selectors & Parameter Tooltips Overhaul
+
+A fresh report asked for the wizard's raw developer text inputs, hand-typed
+IEEE addresses, and confusing fields to be replaced by Home Assistant's *native*
+selectors (the friendly device / entity / target browsers), with a plain-English
+tooltip on **every** field. v0.1.30 adds that opt-in "advanced" route **without
+weakening the cross-bus safety guard**, again with **no change to the wire
+format**: the 19-byte frame, SipHash, LEAT, and Mesh-RTC stay exactly as they
+were.
+
+### 3.14 Native selectors are an *opt-in* side door, not a replacement for the guard (v0.1.30)
+
+- **The naive swap would *weaken* safety.** Home Assistant's
+   `DeviceSelector` / `TargetSelector` list **every** device or target the user
+   can see — they cannot be filtered by protocol, and `TargetSelector` returns a
+   nested `{entity_id, device_id, area_id}` dict the compiler does not expect.
+   Dropping the protocol-filtered `SelectSelector` pickers for bare native
+   selectors would let a Z-Wave switch be paired to a Zigbee light, the exact
+   "cross-bus popcorn" this project has forbidden since v0.1.11. So the native
+   selectors are kept **in the code** (import parity with real HA Core, locked
+   by the conftest stubs) but used as an **opt-in** route, not the default.
+- **The fix adds an "advanced" direction, not a new default.** The entry step's
+   dropdown gains a third option, *"Advanced: pick a source or target manually
+   (native device / entity / target browser)"*. Picking it opens a new
+     `async_step_manual` step (with its own `_manual_schema`) that uses
+     `DeviceSelector`, `EntitySelector`, and `TextSelector` for a no-IEEE, no-YAML
+   source choice — then **funnels into the very same** protocol-filtered
+     `async_step_anchor("target")`, recording the chosen device's protocol as the
+   wizard's anchor first. The cross-bus guard is therefore *never bypassed*: the
+   native picker supplies the source, but the target picker still excludes any
+   device that cannot reach it.
+- **Tooltips live in `strings.json` / `en.json`, not in `description=` kwargs.**
+   Real HA Core's `SelectSelectorConfig` / `NumberSelectorConfig` use
+     `PREVENT_EXTRA`, so passing `description=` to a selector *crashes* the flow
+   at build time. The reassuring plain-English guidance is placed in each step's
+    `data` section (HA renders `step.data.<field>` as the field label), and a new
+    `manual` step plus a `direction` tooltip are added to **both** files, kept
+    byte-for-byte equal.
+- **The fix is locked with real tests.** Four new integration tests in
+     `tests/test_integration.py` prove the "advanced" option routes to
+     `async_step_manual`, that a native device / entity choice builds the same
+    source entry the wizard does, that the funnel then **filters** the target
+   (the Z-Wave lock is excluded for a Zigbee source), and that an empty manual
+   submission is a clean self-correcting error — 162 tests pass in total.
+- **`ELI5 First, Engineering Second` held.** The new step's title, description,
+   and every `data` tooltip lead with the plain-language "pick by name, no IEEE,
+   no YAML — and we still check the protocol for you" picture *before* the
+    `DeviceSelector` / `async_step_manual` detail.
+- **Version.** `manifest.json`, the MCP `serverInfo`, and `pyproject.toml` all
+   move to `0.1.30`. The MCP surface is still **eight tools**, under the **1,500**
+   lexical-token tripwire - no new schema surface, so the drills stay `6/6` and
+   the C core stays `13/13`.
+
 ---
 
 ## Part 4 — The Release Calendar (one-line timeline)
@@ -822,6 +875,7 @@ were.
 | v0.1.26 | 2026-10-27 | Options-flow handler separation: renamed to the standalone `ShipAnchorOptionsFlowHandler` (inherits `OptionsFlow`, no wizard in its MRO); repaired the `__init__` invariant comment; 6 regression + decoupling tests. No wire-format change. |
 | v0.1.27 | 2026-10-27 | Options-flow constructor signature fix: parameterless `super().__init__()` matching Core's `OptionsFlow` base + `_resolve_entry()` fallback; new `tests/test_options_flow_signature.py` (5 tests). No wire-format change. |
 | v0.1.28 | 2026-10-27 | Options-flow dashboard step handler: the dashboard card is now a real `async_step_dashboard` step with a matching handler (the "gear icon 500: doesn't support step dashboard" fix); `async_step_init` is a thin door; new `tests/test_options_flow_dashboard_step.py` (4 tests). No wire-format change. |
+| v0.1.30 | 2026-10-27 | Native UI selectors & tooltips overhaul: an opt-in "advanced" `async_step_manual` route using native `DeviceSelector`/`EntitySelector`/`TextSelector` (no IEEE, no YAML) that funnels into the *same* protocol-filtered target step so the cross-bus guard is never bypassed; ELI5 tooltips in `strings.json`/`en.json` `data` sections (not `description=` kwargs, which crash Core); 4 new integration tests (162 total). No wire-format change. |
 
 ---
 

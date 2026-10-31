@@ -1,7 +1,7 @@
 {
  "domain": "ship_anchor",
  "name": "SHiP Anchor (Smart Home Independent Protocol)",
- "version": "0.1.28",
+ "version": "0.1.30",
  "documentation": "https://github.com/ZVeguillaCotto/Project-Anchor-SHiP",
  "issue_tracker": "https://github.com/ZVeguillaCotto/Project-Anchor-SHiP/issues",
  "codeowners": [
