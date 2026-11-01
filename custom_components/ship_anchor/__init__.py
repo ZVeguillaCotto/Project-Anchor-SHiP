@@ -208,13 +208,22 @@ async def _async_setup_runtime(hass: HomeAssistant) -> None:
         # ELI5: report every part of the outcome on its own log line so it is
         # easy to scan in the system log, even with a long result object.
         _LOGGER.warning(
-            "SHiP Anchor compile result: success=%s, bindings_added=%d, warnings=%d, errors=%d, dry_run_payloads=%d",
+            "SHiP Anchor compile result: success=%s, bindings_added=%d, warnings=%d, errors=%d, dry_run_payloads=%d, skipped=%d",
             result.success,
             len(result.bindings_added),
             len(result.warnings),
             len(result.errors),
             len(result.dry_run_payloads),
+            getattr(result, "skipped", 0),
         )
+        # ELI5 (v0.1.32): one calm debug line per skipped automation so a
+        # noisy home never floods the user log; the count is in the summary
+        # line above.
+        for _skip in range(getattr(result, "skipped", 0)):
+            _LOGGER.debug(
+                "SHiP Anchor: skipped 1 non-mesh automation (%d/%d) - it speaks no device protocol SHiP Anchor can program offline.",
+                _skip + 1, getattr(result, "skipped", 0),
+            )
         for binding in result.bindings_added:
             _LOGGER.warning(
                 "  binding: %s | %s → %s | clusters=%s group=%s",

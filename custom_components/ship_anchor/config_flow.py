@@ -224,6 +224,35 @@ def _normalize_selection(raw: Any) -> list[str]:
     return ids
 
 
+def _coerce_int(raw, default=None, lo=None, hi=None):
+     """ELI5 (v0.1.32): turn whatever a selector returned into a clamped integer."""
+     if raw is None or (isinstance(raw, str) and raw.strip() == ""):
+          return default
+     try:
+          value = int(float(raw))
+     except (TypeError, ValueError):
+          return default
+     if lo is not None:
+          value = max(int(lo), value)
+     if hi is not None:
+          value = min(int(hi), value)
+     return value
+
+
+def _coerce_float(raw, default=None, lo=None, hi=None):
+     """ELI5 (v0.1.32): turn whatever a selector returned into a clamped float."""
+     if raw is None or (isinstance(raw, str) and raw.strip() == ""):
+          return default
+     try:
+          value = float(raw)
+     except (TypeError, ValueError):
+          return default
+     if lo is not None:
+          value = max(float(lo), value)
+     if hi is not None:
+          value = min(float(hi), value)
+     return value
+
 # ---------------------------------------------------------------------------
 # ELI5 rule → plain-English translation (v0.1.15 options dashboard)
 # ---------------------------------------------------------------------------
@@ -740,8 +769,8 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 hour_start = user_input.get("rule{}_hour_start".format(i + 1))
                 hour_end = user_input.get("rule{}_hour_end".format(i + 1))
                 if hour_start is not None and hour_end is not None:
-                    rule["hour_start"] = int(max(0, min(23, int(hour_start))))
-                    rule["hour_end"] = int(max(0, min(23, int(hour_end))))
+                    rule["hour_start"] = _coerce_int(hour_start, 12, lo=0, hi=23)
+                    rule["hour_end"] = _coerce_int(hour_end, 12, lo=0, hi=23)
                 # Per-kind action parameters (only the relevant ones are set).
                 if "brightness" in caps:
                     rule["brightness"] = int(
@@ -749,22 +778,22 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             0,
                             min(
                                 255,
-                                int(percent_to_brightness(user_input.get("rule{}_brightness_percent".format(i + 1), 100))),
+                                percent_to_brightness(_coerce_int(user_input.get("rule{}_brightness_percent".format(i + 1), 100), 100, lo=0, hi=100)),
                             ),
                         )
                     )
                 if "color_temp" in caps:
                     ct = user_input.get("rule{}_color_temp_kelvin".format(i + 1))
                     if ct is not None:
-                        rule["color_temp_mireds"] = kelvin_to_mireds(ct)
+                        rule["color_temp_mireds"] = kelvin_to_mireds(_coerce_int(ct, 2700, lo=2000, hi=6500))
                 if "transition" in caps:
                     tt = user_input.get("rule{}_transition_seconds".format(i + 1))
                     if tt is not None:
-                        rule["transition_seconds"] = int(max(0, min(60, int(tt))))
+                        rule["transition_seconds"] = _coerce_int(tt, 0, lo=0, hi=60)
                 if "speed" in caps:
                     sp = user_input.get("rule{}_fan_speed".format(i + 1))
                     if sp is not None:
-                        rule["fan_speed"] = int(max(0, min(5, int(sp))))
+                        rule["fan_speed"] = _coerce_int(sp, 0, lo=0, hi=5)
                 if "open_close" in caps:
                     rule["valve_open"] = bool(user_input.get("rule{}_valve_open".format(i + 1), True))
                 if "lock_unlock" in caps:
@@ -772,7 +801,7 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if "setpoint" in caps:
                     st = user_input.get("rule{}_setpoint_c".format(i + 1))
                     if st is not None:
-                        rule["setpoint_c"] = float(st)
+                        rule["setpoint_c"] = _coerce_float(st, 20.0, lo=0.0, hi=35.0)
                 rules.append(rule)
             if not rules:
                 errors["base"] = "rule_required"
@@ -1583,30 +1612,30 @@ class ShipAnchorOptionsFlowHandler(config_entries.OptionsFlow):
                 hour_start = user_input.get("hour_start")
                 hour_end = user_input.get("hour_end")
                 if hour_start is not None and hour_end is not None:
-                    rule["hour_start"] = int(max(0, min(23, int(hour_start))))
-                    rule["hour_end"] = int(max(0, min(23, int(hour_end))))
+                    rule["hour_start"] = _coerce_int(hour_start, 12, lo=0, hi=23)
+                    rule["hour_end"] = _coerce_int(hour_end, 12, lo=0, hi=23)
                 if "brightness" in caps:
                       # ELI5 (v0.1.16): the user types a 0–100 % dial; we
                       # translate it to the device's 0–255 byte.
                     rule["brightness"] = percent_to_brightness(
-                        int(user_input.get("brightness_percent", 100))
+                        _coerce_int(user_input.get("brightness_percent", 100), 100, lo=0, hi=100)
                      )
                 if "color_temp" in caps and user_input.get("color_temp_kelvin") is not None:
                       # ELI5 (v0.1.16): the user types Kelvin (like a bulb
                       # box); we translate it to mireds for the hardware.
                     rule["color_temp_mireds"] = kelvin_to_mireds(
-                        int(user_input["color_temp_kelvin"])
+                        _coerce_int(user_input["color_temp_kelvin"], 2700, lo=2000, hi=6500)
                      )
                 if "transition" in caps and user_input.get("transition_seconds") is not None:
-                    rule["transition_seconds"] = int(max(0, min(60, int(user_input["transition_seconds"]))))
+                    rule["transition_seconds"] = _coerce_int(user_input["transition_seconds"], 0, lo=0, hi=60)
                 if "speed" in caps and user_input.get("fan_speed") is not None:
-                    rule["fan_speed"] = int(max(0, min(5, int(user_input["fan_speed"]))))
+                    rule["fan_speed"] = _coerce_int(user_input["fan_speed"], 0, lo=0, hi=5)
                 if "open_close" in caps:
                     rule["valve_open"] = bool(user_input.get("valve_open", True))
                 if "lock_unlock" in caps:
                     rule["lock_unlock"] = bool(user_input.get("lock_unlock", False))
                 if "setpoint" in caps and user_input.get("setpoint_c") is not None:
-                    rule["setpoint_c"] = float(user_input["setpoint_c"])
+                    rule["setpoint_c"] = _coerce_float(user_input["setpoint_c"], 20.0, lo=0.0, hi=35.0)
                 new_rules = list(data.get("rules") or [])
                 new_rules.append(rule)
                 new_data = dict(data)

@@ -20,7 +20,7 @@ import logging
 from dataclasses import asdict
 from typing import Any
 
-from .automation import parse_ha_automation_dict
+from .automation import parse_ha_automation_dict, is_mesh_automation
 from .protocols import (
     BindingRecord,
     CompileResult,
@@ -195,7 +195,24 @@ class AnchorCompiler:
             return result
 
         for auto_config in automations:
+             # ELI5 (v0.1.32): most homes have time-based, template, or
+             # notification automations that speak no mesh protocol. They
+             # cannot be bound, so the compiler *quietly* counts them as
+             # skipped instead of emitting one ERROR per automation on every
+             # scan (the old "38 warnings" log flood). A one-line, calm
+             # summary is all the user needs.
+            if not is_mesh_automation(auto_config):
+                result.skipped += 1
+                continue
             await self._compile_automation(auto_config, result, dry_run)
+        if result.skipped:
+            result.warnings.append(
+                 "ELI5: skipped %d non-mesh automation(s) - they speak no "
+                 "device protocol SHiP Anchor can program offline "
+                 "(time, template, or notification triggers).".format(
+                    result.skipped
+                 )
+             )
         if not dry_run:
             self._stored_data.setdefault("bindings", []).extend(
                 asdict(binding) for binding in result.bindings_added

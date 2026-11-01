@@ -297,4 +297,59 @@ def parse_ha_automation_dict(
     return normalized
 
 
-__all__ = ["parse_ha_automation_dict"]
+def is_mesh_automation(auto_dict: dict) -> bool:
+     """ELI5: can SHiP Anchor *do something offline* with this automation?
+     
+     Most Home Assistant homes run dozens of automations that have nothing
+     to do with mesh control: a weather notification, a time-based scene,
+     a template, a calendar reminder. None speak a local mesh protocol, so the
+     compiler cannot bind them - and calling each one an error would flood the
+     system log on every scan. So the scanner quietly skips the irrelevant
+     ones instead. An automation is mesh-relevant when it names a bus we can
+     program, mirroring the normalizer's own protocol detection:
+     
+       * an explicit ``protocol:`` key that maps to a known bus, or
+       * a device trigger on a known mesh integration (zha, zwave_js, ...), or
+       * an action whose service domain is a mesh service (shelly, tasmota, ...).
+     
+     Pure and side-effect free, so it is unit-testable without Home Assistant.
+     """
+     known = {
+          "ZHA", "ZIGBEE2MQTT", "ZWAVE", "MATTER", "SHELLY", "TASMOTA",
+     }
+     if str(auto_dict.get("protocol", "")).upper() in known:
+          return True
+
+     def _as_list(value):
+          if value is None:
+               return []
+          return value if isinstance(value, list) else [value]
+
+     triggers = _as_list(auto_dict.get("trigger", auto_dict.get("triggers")))
+     actions = _as_list(auto_dict.get("action", auto_dict.get("actions")))
+
+     mesh_domains = (
+          "zha", "zigbee2mqtt", "zwave_js", "zwave", "matter", "shelly", "tasmota",
+     )
+
+     # 1) a device trigger on a mesh integration is always mesh-relevant.
+     for trigger in triggers:
+          if not isinstance(trigger, dict):
+               continue
+          if str(trigger.get("platform", "")) == "device":
+               domain = str(trigger.get('domain', '')).lower()
+               integration = str(trigger.get('integration', '')).lower()
+               if domain in mesh_domains or integration in mesh_domains:
+                    return True
+
+     # 2) an action that drives a mesh service domain is mesh-relevant.
+     for action in actions:
+          if not isinstance(action, dict):
+               continue
+          service = str(action.get('action', action.get('service', '')))
+          domain = service.split(".", 1)[0] if "." in service else ""
+          if domain in mesh_domains:
+               return True
+     return False
+
+__all__ = ["parse_ha_automation_dict", "is_mesh_automation"]

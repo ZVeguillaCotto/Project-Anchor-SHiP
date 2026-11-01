@@ -842,6 +842,79 @@ were.
 
 ---
 
+### v0.1.31 - Registry-Iteration Purge & Selector Normalization
+
+The fresh audit asked for every raw `device_reg.devices.values()` /
+`entity_reg.entities.values()` iteration (deprecated in Home Assistant Core
+2024.x, a `DeprecationWarning` on every wizard run) to be gone, and for
+selector input to be normalized so a stray non-list value can never crash a
+wizard or options-flow step. v0.1.31 does exactly that with **no change to the
+wire format**: the 19-byte frame, SipHash, LEAT, and Mesh-RTC are untouched.
+
+- **Two module-level helpers, one place.** `_registry_items(registry, kind)`
+   reads items via the modern `async_items()` API first, then falls back to
+   `.devices.values()` / `.entities.values()` for older Core -- and it is the
+   *only* place that touches `.values()` (the fallback is the last line of
+   defence, not the default). `_normalize_selection(raw)` flattens whatever a
+   `DeviceSelector` / `EntitySelector` hands back (a list, a device dict, a
+   string, or `None`) into a clean id list so downstream code never has to
+   guess.
+- **The fallback is a guard, not the path.** Real Core's `DeviceRegistry`
+   exposes `async_items()`; the `.values()` branch exists only for the
+   conftest fakes and legacy Core. Every call site in `config_flow.py` (the
+   anchor step, the manual step, the options flow) and `compiler.py`
+   (drift detection, entity-resolution fallback) now routes through the
+   helpers.
+- **`ELI5 First, Engineering Second` held.** Both helpers lead with a
+   plain-language docstring ("turn whatever the picker handed us into a clean
+   list of ids") before the `async_items()` detail.
+- **Tests.** `tests/test_config_flow_unit.py` and the integration tests
+   exercise the helpers; the suite stays green.
+- **Version.** `manifest.json`, the MCP `serverInfo`, and `pyproject.toml`
+   move to `0.1.31`. The MCP surface is still eight tools under the
+   1,500-token tripwire -- no schema change.
+
+---
+
+### v0.1.32 - Quiet Scanner & Coercion Hardening
+
+The audit flagged two more rough edges: a dry-run scan that *flooded the log*
+with one error per non-mesh automation (a time-based bell, a template light, a
+weather notification -- dozens of warnings for a home that is doing nothing
+wrong), and wizard / options-flow steps that would raise on a selector value
+that was not the expected type. v0.1.32 fixes both with **no change to the
+wire format**.
+
+- **A quiet scanner, not a noisy one.** A new pure predicate
+   `is_mesh_automation(auto_dict)` in `automation.py` decides, in one place,
+   whether an automation speaks a device protocol SHiP Anchor can program
+   offline (a device trigger on a mesh domain, or an action whose service
+   domain is a mesh domain). `async_compile` now *counts* the automations it
+   cannot bind as `CompileResult.skipped` and emits a single calm, aggregate
+   `ELI5: skipped N non-mesh automation(s)` warning -- never one error row per
+   automation. The per-skip detail is kept at `DEBUG` for anyone who wants it.
+- **`skipped` is a new, honest field.** `CompileResult` gains `skipped: int =
+   0`; the `ship_anchor.compile` / `erase_all` summary and the `__init__.py`
+   log now report it alongside `bindings_added`, so the user sees "compiled X,
+   skipped Y" instead of a wall of red.
+- **Coercion hardening.** Every wizard and options-flow step that used to call
+   raw `int(...)` / `float(...)` on a selector value now goes through two
+   tiny module-level helpers, `_coerce_int(raw, default, lo, hi)` and
+   `_coerce_float(raw, default, lo, hi)`. A value that is the right type is
+   unchanged; a missing or unparseable value degrades to a sensible clamped
+   default instead of raising. The cross-bus guard and the human-unit
+   translation layer are untouched.
+- **Tests.** Three new unit tests in `tests/test_compiler_unit.py` lock the
+   behaviour: a ZHA / Shelly device-trigger automation is accepted, a
+   time-based and a template automation are rejected, and a fresh
+   `CompileResult` starts with `skipped == 0`. The full suite is `165`
+   tests; the C core stays `13/13` and the drills stay `6/6`.
+- **Version.** `manifest.json`, the MCP `serverInfo`, and `pyproject.toml`
+   move to `0.1.32`. The MCP surface is still eight tools under the
+   1,500-token tripwire -- no schema change, so the drills stay `6/6`.
+
+---
+
 ## Part 4 — The Release Calendar (one-line timeline)
 
 | Tag | Date (Eastern) | One-line summary |
@@ -876,6 +949,8 @@ were.
 | v0.1.27 | 2026-10-27 | Options-flow constructor signature fix: parameterless `super().__init__()` matching Core's `OptionsFlow` base + `_resolve_entry()` fallback; new `tests/test_options_flow_signature.py` (5 tests). No wire-format change. |
 | v0.1.28 | 2026-10-27 | Options-flow dashboard step handler: the dashboard card is now a real `async_step_dashboard` step with a matching handler (the "gear icon 500: doesn't support step dashboard" fix); `async_step_init` is a thin door; new `tests/test_options_flow_dashboard_step.py` (4 tests). No wire-format change. |
 | v0.1.30 | 2026-10-27 | Native UI selectors & tooltips overhaul: an opt-in "advanced" `async_step_manual` route using native `DeviceSelector`/`EntitySelector`/`TextSelector` (no IEEE, no YAML) that funnels into the *same* protocol-filtered target step so the cross-bus guard is never bypassed; ELI5 tooltips in `strings.json`/`en.json` `data` sections (not `description=` kwargs, which crash Core); 4 new integration tests (162 total). No wire-format change. |
+| v0.1.31 | 2026-10-28 | Registry-iteration purge & selector normalization: two module-level helpers (`_registry_items` via `async_items()`, `_normalize_selection`) replace every raw `.devices.values()` / `.entities.values()` iteration; modern Core default with a legacy fallback. No wire-format change. |
+| v0.1.32 | 2026-10-28 | Quiet scanner & coercion hardening: `is_mesh_automation` + `CompileResult.skipped` collapse the 38-error log flood into one calm aggregate warning; `_coerce_int` / `_coerce_float` harden every wizard / options-flow step against bad selector values. No wire-format change. |
 
 ---
 

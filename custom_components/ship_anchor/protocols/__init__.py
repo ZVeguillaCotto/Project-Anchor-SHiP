@@ -67,6 +67,10 @@ class CompileResult:
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     dry_run_payloads: list[dict] = field(default_factory=list)
+    # ELI5 (v0.1.32): how many scanned automations the compiler quietly
+    # skipped because they speak no mesh protocol (time/template/notify).
+    # Kept separate from errors so a noisy home does not fill the log.
+    skipped: int = 0
 
 
 class ProtocolHandler(ABC):

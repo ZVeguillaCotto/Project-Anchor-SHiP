@@ -319,3 +319,61 @@ def test_malformed_ip_is_rejected() -> None:
         _validate_ipv4("1.2.3.256", "ip")    # octet > 255
     with pytest.raises(ValueError):
         _validate_ipv4("not.an.ip", "ip")
+
+
+# ---------------------------------------------------------------------------
+# v0.1.32 — the scanner's mesh/noise decision, and the quiet "skipped" count
+# ---------------------------------------------------------------------------
+from custom_components.ship_anchor.automation import is_mesh_automation
+from custom_components.ship_anchor.protocols import CompileResult
+
+_MESH_ZHA = {
+    "alias": "hall light",
+    "trigger": [{
+        "platform": "device", "domain": "zha", "integration": "zha",
+        "device_id": "zha_dev", "type": "button_press",
+    }],
+    "action": [{"service": "light.turn_on", "entity_id": "light.kitchen"}],
+}
+_MESH_SHELLY = {
+    "alias": "shelly switch",
+    "trigger": [{
+        "platform": "device", "domain": "shelly", "integration": "shelly",
+        "device_id": "shelly_1", "type": "button",
+    }],
+    "action": [{"service": "light.turn_on", "entity_id": "light.s"}],
+}
+_TIME_BELL = {
+    "alias": "morning bell",
+    "trigger": [{"platform": "time", "at": "07:00"}],
+    "action": [{"service": "notify.mobile_app", "data": {"message": "rise"}}],
+}
+_TEMPLATE_GLOW = {
+    "alias": "template glow",
+    "trigger": [{"platform": "state", "entity_id": "input_boolean.x"}],
+    "action": [{"service": "light.turn_on", "entity_id": "light.t"}],
+}
+
+
+def test_is_mesh_automation_accepts_mesh_triggers() -> None:
+     # ELI5: an automation triggered by a real device on a mesh protocol
+     # (Zigbee ZHA, or a Shelly) is one SHiP Anchor *can* program offline.
+    assert is_mesh_automation(_MESH_ZHA) is True
+    assert is_mesh_automation(_MESH_SHELLY) is True
+
+
+def test_is_mesh_automation_rejects_noise() -> None:
+     # ELI5: a time-based bell and a template light speak no device protocol,
+     # so the scanner must skip them instead of spamming one error per
+     # automation on every dry-run scan.
+    assert is_mesh_automation(_TIME_BELL) is False
+    assert is_mesh_automation(_TEMPLATE_GLOW) is False
+
+
+def test_compile_result_defaults_to_zero_skipped() -> None:
+     # ELI5: a fresh result has skipped nothing; the field must exist and start
+     # at zero so the aggregate "skipped N" warning only appears when needed.
+    result = CompileResult()
+    assert result.skipped == 0
+    result.skipped += 1
+    assert result.skipped == 1
