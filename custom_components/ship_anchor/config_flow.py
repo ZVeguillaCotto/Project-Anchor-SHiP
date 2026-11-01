@@ -159,6 +159,72 @@ def _device_ieee(device: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
+# v0.1.31 — Registry iteration & selector normalization
+# ELI5: Home Assistant is deprecating the private ``.devices`` / ``.entities``
+# dictionaries on the device/entity registries (removed in Core 2027.9.0).
+# The modern, supported way to walk a registry is ``registry.async_items()``.
+# We also normalize what Home Assistant's *native selectors* hand back, because
+# a ``DeviceSelector`` yields a bare id, a multiple ``SelectSelector`` yields a
+# list, and a ``TargetSelector`` yields a nested dict — and the wizard used to
+# crash the moment any of those shapes reached it. These tiny helpers keep one
+# source of truth for "give me a clean list of ids" and "give me the registry's
+# items", so source-first and target-first flows never choke on a selector.
+# ---------------------------------------------------------------------------
+def _registry_items(registry: Any, kind: str) -> list:
+    """ELI5: hand back every item a registry holds, the modern way.
+
+     ``kind`` is ``"device"`` or ``"entity"``. In modern Home Assistant Core
+     the supported entry point is ``registry.async_items()``; we use it when
+     present and fall back to the legacy ``.devices`` / ``.entities`` mapping
+     so the very oldest installs (and our unit-test fakes) still work.
+     """
+    items = getattr(registry, "async_items", None)
+    if callable(items):
+        try:
+            return list(items())
+        except Exception:    # noqa: BLE001 — a registry that cannot be walked
+            pass
+    attr = {"device": "devices", "entity": "entities"}[kind]
+    mapping = getattr(registry, attr)
+    if mapping is None:
+        return []
+    values = getattr(mapping, "values", None)
+    try:
+        if callable(values):
+            return list(values())
+        return list(mapping.values())
+    except Exception:    # noqa: BLE001 — non-dict mapping
+        return []
+
+
+def _normalize_selection(raw: Any) -> list[str]:
+    """ELI5: turn *whatever* a selector handed back into a clean list of ids.
+
+    A single ``DeviceSelector`` gives one id; a multiple ``SelectSelector``
+    gives a list; a bare ``TargetSelector`` gives a nested dict; an empty
+    submission gives ``None``. All of those are flattened here into a list of
+    non-empty id strings, so the picker step can never crash on a raw shape.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    elif isinstance(raw, dict):
+        # A native TargetSelector returns {"device_id": "...", "entity_id": ...}.
+        raw = [raw.get("device_id"), raw.get("entity_id"), raw.get("area_id")]
+    elif not isinstance(raw, (list, tuple, set)):
+        raw = [raw]
+    ids: list[str] = []
+    for item in raw:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if text:
+            ids.append(text)
+    return ids
+
+
+# ---------------------------------------------------------------------------
 # ELI5 rule → plain-English translation (v0.1.15 options dashboard)
 # ---------------------------------------------------------------------------
 # The wizard stores rules as "raw" dicts — {gesture: "3x Tap", hour_start: 22,
@@ -298,7 +364,7 @@ def _target_kind(device: Any, entity_reg: Any) -> str:
     device first, then fall back to keywords in its model string.
     """
     if entity_reg is not None:
-        for entity in entity_reg.entities.values():
+        for entity in _registry_items(entity_reg, "entity"):
             if getattr(entity, "device_id", None) != _device_id(device):
                 continue
             domain = str(getattr(entity, "platform", "") or "")
@@ -491,10 +557,11 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._input = {}  # type: ignore[attr-defined]
 
         if user_input is not None:
-            raw_ids = user_input.get(key, []) or []
-            if isinstance(raw_ids, str):
-                raw_ids = [raw_ids]
-            device_ids = [str(item) for item in raw_ids if item]
+            # ELI5 (v0.1.31): a native DeviceSelector hands back a bare id, a
+            # multiple SelectSelector a list, and a TargetSelector a dict.
+            # Normalize every shape to a clean id list so a source-first or
+            # target-first submit can never crash on a raw selector output.
+            device_ids = _normalize_selection(user_input.get(key))
             use_group = bool(user_input.get("use_group", False))
             group_name = str(user_input.get("group_name", "") or "").strip()
 
@@ -1027,7 +1094,7 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def _candidate_sources(self, device_reg: Any, entity_reg: Any) -> list:
         """ELI5: find devices that look like switches / buttons / dimmers."""
         scores: dict[str, int] = {}
-        for entity in entity_reg.entities.values():
+        for entity in _registry_items(entity_reg, "entity"):
             domain = str(getattr(entity, "platform", "") or "")
             if domain not in SOURCE_DOMAINS:
                 continue
@@ -1035,7 +1102,7 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not device_id:
                 continue
             scores[device_id] = scores.get(device_id, 0) + 2
-        for device in device_reg.devices.values():
+        for device in _registry_items(device_reg, "device"):
             sig = "{} {}".format(
                 _device_manufacturer(device), _device_model(device)
             ).lower()
@@ -1043,7 +1110,7 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 scores[device.id] = scores.get(device.id, 0) + 1
         results = [
             (device.id, _device_name(device))
-            for device in device_reg.devices.values()
+            for device in _registry_items(device_reg, "device")
             if device.id in scores
         ]
         results.sort(key=lambda pair: -scores.get(pair[0], 0))
@@ -1052,7 +1119,7 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def _candidate_targets(self, device_reg: Any, entity_reg: Any) -> list:
         """ELI5: find devices that look like lights / valves / locks."""
         scores: dict[str, int] = {}
-        for entity in entity_reg.entities.values():
+        for entity in _registry_items(entity_reg, "entity"):
             domain = str(getattr(entity, "platform", "") or "")
             if domain not in TARGET_DOMAINS:
                 continue
@@ -1060,7 +1127,7 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not device_id:
                 continue
             scores[device_id] = scores.get(device_id, 0) + 2
-        for device in device_reg.devices.values():
+        for device in _registry_items(device_reg, "device"):
             sig = "{} {}".format(
                 _device_manufacturer(device), _device_model(device)
             ).lower()
@@ -1068,7 +1135,7 @@ class ShipAnchorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 scores[device.id] = scores.get(device.id, 0) + 1
         results = [
             (device.id, _device_name(device))
-            for device in device_reg.devices.values()
+            for device in _registry_items(device_reg, "device")
             if device.id in scores
         ]
         results.sort(key=lambda pair: -scores.get(pair[0], 0))
