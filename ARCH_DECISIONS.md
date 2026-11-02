@@ -913,6 +913,53 @@ wire format**.
    move to `0.1.32`. The MCP surface is still eight tools under the
    1,500-token tripwire -- no schema change, so the drills stay `6/6`.
 
+### v0.1.33 - Custom Sidebar Panel & Mesh API Foundation
+
+Up to v0.1.32 the only way to inspect or change a binding was the cramped
+options-flow dashboard -- a settings sub-dialog, one card at a time. v0.1.33
+gives SHiP Anchor a **dedicated, full-screen control center** behind an
+`mdi:anchor` sidebar icon (inspired by the C.A.F.E. custom panel), so a
+non-engineer can see every binding, every relay's health, and the mesh
+topology in one glance and test a binding in place -- all without leaving the
+UI. The 19-byte frame, SipHash, LEAT, and Mesh-RTC are **unchanged**; this is
+a pure presentation + API layer on top of the existing runtime.
+
+- **ELI5: a real dashboard, not a settings page.** A new `panel.py` and a
+   single-file `frontend/index.html` give SHiP Anchor its own sidebar entry.
+   The front page makes *one* request (`ship_anchor/get_snapshot`) and renders
+   everything it gets -- active bindings, their drift/health, the mesh
+   topology with per-hop heartbeat verdicts, and a dry-run "preview a binding"
+   tester -- instead of opening three separate dialogs.
+- **Three pure, unit-testable data providers.** `build_bindings_overview`
+   (every binding + how healthy each is, with the v0.1.23 drift flag),
+   `build_mesh_telemetry` (one honest hop per binding, fed through the *same*
+   `diagnose_mesh` verdict the MCP tool uses, so the dashboard and the MCP
+   tool can never disagree about a hop's health), and
+   `async_build_compile_preview` (what *would* happen, always a dry run).
+   `build_dashboard_snapshot` stitches them under one ELI5 headline so the front
+   end makes one request, not three.
+- **A thin, defensive registration layer.** `async_register_ship_panel` /
+   `async_unregister_ship_panel` (wired into `__init__.py`'s setup/unload) give
+   the sidebar icon, the static view, and five WebSocket commands
+   (`ship_anchor/get_snapshot`, `/bindings`, `/telemetry`, `/compile_preview`,
+   `/ping`). Each piece is guarded so a missing or new Home Assistant version
+   logs a calm warning and keeps the load-bearing services alive -- a non-
+   critical UI enhancement must never crash start-up.
+- **Preview-only, always.** `async_build_compile_preview` forces `dry_run=True`
+   so no real 19-byte frame ever leaves the box; a missing compiler degrades to
+   a calm ELI5 "nothing to preview" instead of a traceback.
+- **Tests.** A new `tests/test_panel_unit.py` (9 tests) locks the pure
+   providers: an empty runtime is a valid empty snapshot, drift lives in its
+   own list, one binding yields one hop, an overdue hop is reported orphaned via
+   the heartbeat timing path, `compile_preview` is always a dry run, and the
+   snapshot stitches bindings + mesh + engine + nonce windows. The full suite
+   is now `174` tests; the C core stays `13/13` and the drills stay `6/6`.
+- **Version.** `manifest.json`, the MCP `serverInfo`, and `pyproject.toml`
+   move to `0.1.33`. The MCP surface is still eight tools under the
+   1,500-token tripwire -- this milestone adds a Home Assistant panel, not an
+   MCP tool, so the drills stay `6/6`.
+
+---
 ---
 
 ## Part 4 — The Release Calendar (one-line timeline)
@@ -951,6 +998,7 @@ wire format**.
 | v0.1.30 | 2026-10-27 | Native UI selectors & tooltips overhaul: an opt-in "advanced" `async_step_manual` route using native `DeviceSelector`/`EntitySelector`/`TextSelector` (no IEEE, no YAML) that funnels into the *same* protocol-filtered target step so the cross-bus guard is never bypassed; ELI5 tooltips in `strings.json`/`en.json` `data` sections (not `description=` kwargs, which crash Core); 4 new integration tests (162 total). No wire-format change. |
 | v0.1.31 | 2026-10-28 | Registry-iteration purge & selector normalization: two module-level helpers (`_registry_items` via `async_items()`, `_normalize_selection`) replace every raw `.devices.values()` / `.entities.values()` iteration; modern Core default with a legacy fallback. No wire-format change. |
 | v0.1.32 | 2026-10-28 | Quiet scanner & coercion hardening: `is_mesh_automation` + `CompileResult.skipped` collapse the 38-error log flood into one calm aggregate warning; `_coerce_int` / `_coerce_float` harden every wizard / options-flow step against bad selector values. No wire-format change. |
+| v0.1.33 | 2026-10-28 | Custom sidebar panel & mesh API foundation: a dedicated `mdi:anchor` full-screen control center (`panel.py` + single-file `frontend/index.html`) with three pure, unit-tested providers (bindings+drift, mesh telemetry via the shared `diagnose_mesh` verdict, always-dry-run compile preview) and a thin, defensive registration layer (5 WebSocket commands). No wire-format change. |
 
 ---
 

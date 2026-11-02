@@ -1,0 +1,376 @@
+<!doctype html>
+<!--
+  ==========================================================================
+  SHiP Anchor -- Control Center (v0.1.33)
+  ==========================================================================
+  ELI5: this is the front page behind the mdi:anchor sidebar icon. It makes
+  ONE request to the backend (ship_anchor/get_snapshot) and renders everything
+  it gets: the active bindings, their drift/health, the mesh topology with
+  per-hop heartbeat verdicts, and a "preview a binding" tester that always runs
+  a DRY-RUN so no real frame is ever sent. The whole thing is one file so it
+  can be served from the integration with no build step.
+  Engineering: talks to Home Assistant's authenticated WebSocket
+  (hassApiWebSocket) and dispatches the ship_anchor/* commands the backend
+  registers in panel.py.
+  ==========================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SHiP Anchor -- Control Center</title>
+  <style>
+    :root {
+      --ok: #2e7d32;
+      --warn: #c77700;
+      --bad: #c62828;
+      --muted: #6b7280;
+      --bg: #0f1420;
+      --panel: #171e2e;
+      --line: #28324a;
+      --ink: #e6edf7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.5;
+    }
+    header {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: baseline;
+      gap: 1rem;
+    }
+    header h1 { font-size: 1.3rem; margin: 0; }
+    header .sub { color: var(--muted); font-size: 0.9rem; }
+    main { padding: 1.5rem; max-width: 1100px; margin: 0 auto; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 1.25rem;
+      margin-bottom: 1.25rem;
+    }
+    .card h2 { margin-top: 0; font-size: 1.05rem; }
+    .eli5 {
+      background: #0c1322;
+      border-left: 3px solid #3b82f6;
+      padding: 0.6rem 0.9rem;
+      border-radius: 6px;
+      color: #cfe0ff;
+      margin-bottom: 0.9rem;
+      font-size: 0.95rem;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-weight: 600; }
+    .badge {
+      display: inline-block;
+      padding: 0.1rem 0.5rem;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 600;
+    }
+    .b-healthy { background: #16351c; color: #63d17a; }
+    .b-degraded { background: #3a2a06; color: #f0b429; }
+    .b-orphaned { background: #3a0d0d; color: #f87171; }
+    .b-unknown { background: #23293a; color: #b6c0d4; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; }
+    .stat { text-align: center; }
+    .stat .n { font-size: 2rem; font-weight: 700; }
+    .stat .l { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .tester { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: flex-end; }
+    .tester label { display: flex; flex-direction: column; font-size: 0.8rem; color: var(--muted); }
+    .tester input, .tester select {
+      background: #0c1322;
+      border: 1px solid var(--line);
+      color: var(--ink);
+      border-radius: 6px;
+      padding: 0.45rem 0.6rem;
+      font-size: 0.9rem;
+    }
+    button {
+      background: #2563eb;
+      color: #fff;
+      border: 0;
+      border-radius: 6px;
+      padding: 0.55rem 1rem;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    button:hover { background: #1d4ed8; }
+    pre {
+      background: #0c1322;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0.8rem;
+      overflow: auto;
+      font-size: 0.82rem;
+    }
+    .muted { color: var(--muted); }
+    .pill { font-size: 0.75rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>⚓ SHiP Anchor -- Control Center</h1>
+    <span class="sub">Offline-first smart-home bindings, mesh, and previews.</span>
+    <span id="engine" class="pill"></span>
+  </header>
+
+  <main>
+    <div id="snapshot" class="card">
+      <h2>Snapshot</h2>
+      <p id="snapshot-msg" class="eli5">
+        Loading… the control center is asking the backend for everything in one
+        request.
+      </p>
+    </div>
+
+    <div id="bindings" class="card" style="display:none">
+      <h2>Active Bindings</h2>
+      <p id="bindings-eli5" class="eli5"></p>
+      <table id="bindings-table">
+        <thead>
+          <tr>
+            <th>Protocol</th>
+            <th>Source</th>
+            <th>Target</th>
+            <th>Group</th>
+            <th>Preflight</th>
+            <th>Drift</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="mesh" class="card" style="display:none">
+      <h2>Mesh Telemetry</h2>
+      <p id="mesh-eli5" class="eli5"></p>
+      <div id="mesh-grid" class="grid"></div>
+      <table id="mesh-table" style="margin-top:1rem">
+        <thead>
+          <tr>
+            <th>Hop</th>
+            <th>From</th>
+            <th>To</th>
+            <th>Protocol</th>
+            <th>Health</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="tester" class="card">
+      <h2>Preview a Binding (Dry-Run)</h2>
+      <p class="eli5">
+        This only shows what <em>would</em> be programmed. It never sends a real
+        frame to a device -- the backend forces a dry run.
+      </p>
+      <div class="tester">
+        <label>Protocol
+          <select id="t-protocol">
+            <option value="shelly">shelly</option>
+            <option value="zha">zha</option>
+            <option value="z2m">z2m</option>
+            <option value="tasmota">tasmota</option>
+            <option value="matter">matter</option>
+            <option value="zwave_js">zwave_js</option>
+          </select>
+        </label>
+        <label>Source IEEE / IP
+          <input id="t-source" placeholder="192.0.2.10 / 00158d0001234567" />
+        </label>
+        <label>Target IEEE / IP
+          <input id="t-target" placeholder="192.0.2.20 / 00158d000abcdef0" />
+        </label>
+        <button id="t-run">Preview (dry-run)</button>
+      </div>
+      <pre id="t-out" style="margin-top:1rem; display:none"></pre>
+    </div>
+  </main>
+
+  <script>
+    "use strict";
+    /*
+     * ELI5: the dashboard talks to Home Assistant's authenticated WebSocket and
+     * dispatches the ship_anchor/* commands registered in panel.py. We try the
+     * real HA path first; if it is unavailable (e.g. a raw preview on a laptop)
+     * we fall back to a clearly-labelled mock so the page still demonstrates the
+     * shape of the data.
+     */
+    const KNOWN = ["snapshot", "bindings", "telemetry", "compile_preview", "ping"];
+
+    function badge(state) {
+      const cls = {
+        healthy: "b-healthy",
+        degraded: "b-degraded",
+        orphaned: "b-orphaned",
+        unknown: "b-unknown",
+      };
+      const label = (state || "unknown").charAt(0).toUpperCase() +
+        (state || "unknown").slice(1);
+      return '<span class="badge ' + (cls[state] || "b-unknown") + '">' +
+        label + "</span>";
+    }
+
+    function escapeHtml(s) {
+      return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    function renderSnapshot(snap) {
+      document.getElementById("snapshot-msg").textContent =
+        snap.eli5_summary || "Snapshot received.";
+      document.getElementById("engine").textContent =
+        snap.engine ? ("engine: " + snap.engine.name) : "";
+
+      const bindings = snap.bindings || {};
+      const bwrap = document.getElementById("bindings");
+      document.getElementById("bindings-eli5").textContent =
+        bindings.eli5_summary || "No bindings yet.";
+      const bbody = document.querySelector("#bindings-table tbody");
+      bbody.innerHTML = "";
+      (bindings.bindings || []).forEach(function (b) {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td>" + escapeHtml(b.protocol) + "</td>" +
+          "<td class='muted'>" + escapeHtml(b.source) + "</td>" +
+          "<td class='muted'>" + escapeHtml(b.target) + "</td>" +
+          "<td>" + escapeHtml(b.group == null ? "--" : b.group) + "</td>" +
+          "<td>" + (b.preflight_done ? "done" : "pending") + "</td>" +
+          "<td>" + (b.drifted ? badge("orphaned") : badge("healthy")) + "</td>";
+        bbody.appendChild(tr);
+      });
+      bwrap.style.display = "block";
+
+      const mesh = snap.mesh || {};
+      document.getElementById("mesh-eli5").textContent =
+        mesh.eli5_summary || "No mesh telemetry yet.";
+      const grid = document.getElementById("mesh-grid");
+      grid.innerHTML = "";
+      [["Hops", mesh.hop_count], ["Orphaned", mesh.orphaned_hops],
+       ["Degraded", mesh.degraded_hops],
+       ["Latency (ms)", mesh.modeled_latency_ms]].forEach(function (kv) {
+        const d = document.createElement("div");
+        d.className = "stat";
+        d.innerHTML = "<div class='n'>" +
+          (kv[1] == null ? "--" : kv[1]) +
+          "</div><div class='l'>" + escapeHtml(kv[0]) + "</div>";
+        grid.appendChild(d);
+      });
+      const mbody = document.querySelector("#mesh-table tbody");
+      mbody.innerHTML = "";
+      (mesh.hops || []).forEach(function (h) {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td>" + escapeHtml(h.hop_index) + "</td>" +
+          "<td class='muted'>" + escapeHtml(h.source) + "</td>" +
+          "<td class='muted'>" + escapeHtml(h.target) + "</td>" +
+          "<td>" + escapeHtml(h.protocol) + "</td>" +
+          "<td>" + badge(h.state) + "</td>";
+        mbody.appendChild(tr);
+      });
+      document.getElementById("mesh").style.display = "block";
+    }
+
+    /* ---- real Home Assistant WebSocket path ------------------------------- */
+    function haDispatch(command, params) {
+      return new Promise(function (resolve, reject) {
+        const id = Math.floor(Math.random() * 1e9);
+        const ws = new WebSocket(
+          window.location.origin + "/api/websocket"
+        );
+        ws.onopen = function () {
+          const init = { id: 0, type: "auth", auth_token:
+            window.hass.auth.data.access_token };
+          ws.send(JSON.stringify(init));
+          let phase = "auth";
+          ws.onmessage = function (ev) {
+            const msg = JSON.parse(ev.data);
+            if (msg.type === "auth_ok" && phase === "auth") {
+              phase = "cmd";
+              ws.send(JSON.stringify({
+                id: id, type: "command",
+                command: "ship_anchor/" + command,
+                params: params || {},
+              }));
+              return;
+            }
+            if (msg.type === "result" && msg.id === id) {
+              ws.close();
+              if (msg.error) reject(msg.error);
+              else resolve(msg.result);
+            }
+          };
+        };
+        ws.onerror = function () { ws.close(); reject(new Error("ws error")); };
+      });
+    }
+
+    /* ---- mock fallback so the page is demoable off a HA box --------------- */
+    function mockDispatch(command) {
+      return Promise.resolve({
+        eli5_summary: "Mock snapshot (no Home Assistant backend detected).",
+        engine: { name: "mock", is_native: false },
+        bindings: {
+          eli5_summary: "No bindings in this mock.",
+          bindings: [],
+          drift: [],
+          summary: { total_bindings: 0, drifted: 0, healthy: 0 },
+        },
+        mesh: {
+          eli5_summary: "No hops in this mock.",
+          hop_count: 0, orphaned_hops: 0, degraded_hops: 0,
+          modeled_latency_ms: 0, hops: [],
+        },
+      });
+    }
+
+    function dispatch(command, params) {
+      if (window.hass && window.hass.auth && window.hass.auth.data) {
+        return haDispatch(command, params).catch(function (e) {
+          console.warn("HA dispatch failed, using mock:", e);
+          return mockDispatch(command);
+        });
+      }
+      return mockDispatch(command);
+    }
+
+    function boot() {
+      dispatch("snapshot").then(renderSnapshot).catch(function (e) {
+        document.getElementById("snapshot-msg").textContent =
+          "Could not load snapshot: " + e.message;
+      });
+    }
+
+    document.getElementById("t-run").addEventListener("click", function () {
+      const params = { config: {
+        protocol: document.getElementById("t-protocol").value,
+        source_ieee: document.getElementById("t-source").value.trim(),
+        target_ieee: document.getElementById("t-target").value.trim(),
+      }};
+      dispatch("compile_preview", params).then(function (res) {
+        const out = document.getElementById("t-out");
+        out.style.display = "block";
+        out.textContent = res.eli5_summary + "\n" +
+          JSON.stringify(res, null, 2);
+      }).catch(function (e) {
+        document.getElementById("t-out").style.display = "block";
+        document.getElementById("t-out").textContent = "Error: " + e.message;
+      });
+    });
+
+    boot();
+  </script>
+</body>
+</html>

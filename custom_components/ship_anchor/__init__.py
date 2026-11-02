@@ -53,6 +53,7 @@ except ImportError:
 
 from .compiler import AnchorCompiler
 from .runtime import engine_summary, select_engine
+from .panel import async_register_ship_panel, async_unregister_ship_panel
 
 # ELI5 (v0.1.22): re-export the Home Assistant diagnostics entry points so the
 # "Download diagnostics" button — which Home Assistant wires up automatically
@@ -262,6 +263,12 @@ async def _async_setup_runtime(hass: HomeAssistant) -> None:
 
     _LOGGER.warning("SHiP Anchor: services registered — ready.")
 
+    # ELI5: give SHiP Anchor its mdi:anchor sidebar panel + the backend
+     # WebSocket API. This is a non-critical UI enhancement, so it degrades
+     # gracefully (a warning, never a crash) if the frontend primitives are
+     # unavailable, keeping the load-bearing services fully functional.
+    await async_register_ship_panel(hass, runtime)
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: Any) -> bool:
     """Set up services and persistent state for the configured integration.
@@ -301,6 +308,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: Any) -> bool:
     # Last entry — tear the shared runtime down.
     hass.services.async_remove(DOMAIN, "compile")
     hass.services.async_remove(DOMAIN, "erase_all")
+    # ELI5: take the sidebar panel down when the last binding goes away,
+     # before the runtime data is popped (teardown needs the dashboard_view
+     # reference). Best-effort: a teardown failure must not block unload.
+    try:
+        await async_unregister_ship_panel(hass)
+    except Exception:
+        _LOGGER.debug("ship_anchor panel teardown failed", exc_info=True)
     hass.data.pop(DOMAIN, None)
     _LOGGER.info("SHiP Anchor: last entry removed — services deregistered")
     return True
